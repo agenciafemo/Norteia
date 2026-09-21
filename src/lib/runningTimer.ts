@@ -46,3 +46,35 @@ export function fmtDuration(totalSeconds: number): string {
 export function elapsedFrom(startedAt: string): number {
   return Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000);
 }
+
+/** Maior lançamento manual aceito (mesmo limite da função no banco). */
+export const TEMPO_MANUAL_MAX_MINUTOS = 16 * 60;
+
+/**
+ * Converte horas + minutos digitados em minutos válidos, ou null.
+ *
+ * Aceita "0h 45min", "2h 0min", "1h 90min" (vira 2h30). Recusa zero, negativo
+ * e acima de 16h — o banco recusaria do mesmo jeito, mas avisar antes poupa a
+ * pessoa de um erro depois de clicar em salvar.
+ */
+export function minutosInformados(horas: number, minutos: number): number | null {
+  if (!Number.isFinite(horas) || !Number.isFinite(minutos)) return null;
+  if (horas < 0 || minutos < 0) return null;
+  const total = Math.round(horas) * 60 + Math.round(minutos);
+  if (total < 1 || total > TEMPO_MANUAL_MAX_MINUTOS) return null;
+  return total;
+}
+
+/**
+ * Lança tempo à mão numa tarefa. Só existe este caminho: a tabela não aceita
+ * início/fim escolhidos pela tela, e a linha fica marcada como "manual" para
+ * separar tempo medido de tempo declarado.
+ */
+export async function addManualTaskTime(taskId: string, minutes: number, note?: string): Promise<void> {
+  const { error } = await (supabase as AnyClient).rpc("add_task_manual_time", {
+    _task_id: taskId,
+    _minutes: minutes,
+    _note: note?.trim() || null,
+  });
+  if (error) throw error;
+}

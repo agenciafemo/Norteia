@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { PullFromProductionDialog } from "@/components/tasks/PullFromProductionDialog";
 import { ProjectRail } from "@/components/tasks/ProjectRail";
+import { TaskTimeDialog, type TaskTimeDialogMotivo } from "@/components/tasks/TaskTimeDialog";
 import {
   DndContext,
   DragEndEvent,
@@ -310,6 +311,7 @@ function TaskCardContent({
   nowMs = Date.now(),
   timerPending = false,
   onToggleTimer,
+  onAddTime,
   dragging = false,
   dragHandle,
   onEdit,
@@ -324,6 +326,7 @@ function TaskCardContent({
   nowMs?: number;
   timerPending?: boolean;
   onToggleTimer?: (taskId: string) => void;
+  onAddTime?: (taskId: string) => void;
   dragging?: boolean;
   dragHandle?: ReactNode;
   onEdit?: () => void;
@@ -384,7 +387,7 @@ function TaskCardContent({
         </Badge>
       </div>
 
-      {(timeEntries.length > 0 || onToggleTimer) && (
+      {(timeEntries.length > 0 || onToggleTimer || onAddTime) && (
         <div className="mt-3 flex items-center justify-between gap-2 rounded-xl bg-muted/45 px-2.5 py-2">
           <div
             className={cn(
@@ -397,6 +400,25 @@ function TaskCardContent({
             {formatDuration(totalSeconds)}
           </div>
 
+          <div className="flex shrink-0 items-center gap-1">
+          {/* Esqueceu o cronômetro: soma o tempo à mão, sem sair do quadro. */}
+          {onAddTime && !currentUserTimerRunning && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
+              title="Adicionar tempo sem o cronômetro"
+              aria-label="Adicionar tempo sem o cronômetro"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onAddTime(task.id);
+              }}
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+          )}
           {onToggleTimer && (
             <Button
               type="button"
@@ -415,6 +437,7 @@ function TaskCardContent({
               {currentUserTimerRunning ? "Parar" : "Iniciar"}
             </Button>
           )}
+          </div>
         </div>
       )}
 
@@ -466,6 +489,7 @@ function SortableTaskCard({
   nowMs,
   timerPending,
   onToggleTimer,
+  onAddTime,
   disabled,
   onEdit,
 }: {
@@ -479,6 +503,7 @@ function SortableTaskCard({
   nowMs: number;
   timerPending: boolean;
   onToggleTimer?: (taskId: string) => void;
+  onAddTime?: (taskId: string) => void;
   disabled: boolean;
   onEdit?: (task: TaskRecord) => void;
 }) {
@@ -505,6 +530,7 @@ function SortableTaskCard({
         nowMs={nowMs}
         timerPending={timerPending}
         onToggleTimer={onToggleTimer}
+              onAddTime={onAddTime}
         onEdit={onEdit ? () => onEdit(task) : undefined}
         dragHandle={
           disabled ? (
@@ -539,6 +565,7 @@ function TaskColumn({
   nowMs,
   timerPending,
   onToggleTimer,
+  onAddTime,
   draggingDisabled,
   onEdit,
   hasActiveFilters,
@@ -556,6 +583,7 @@ function TaskColumn({
   nowMs: number;
   timerPending: boolean;
   onToggleTimer?: (taskId: string) => void;
+  onAddTime?: (taskId: string) => void;
   draggingDisabled: boolean;
   onEdit?: (task: TaskRecord) => void;
   hasActiveFilters: boolean;
@@ -601,6 +629,7 @@ function TaskColumn({
               nowMs={nowMs}
               timerPending={timerPending}
               onToggleTimer={onToggleTimer}
+              onAddTime={onAddTime}
               disabled={draggingDisabled}
               onEdit={onEdit}
             />
@@ -810,6 +839,12 @@ export default function Tasks() {
   }, [boardQuery.data?.timeEntries]);
 
   const hasRunningTimer = (boardQuery.data?.timeEntries ?? []).some((entry) => entry.ended_at === null);
+  // Diálogo de tempo: abre sozinho ao concluir sem tempo, ou pelo "+" do card.
+  const [tempoDialog, setTempoDialog] = useState<{
+    task: { id: string; title: string } | null;
+    motivo: TaskTimeDialogMotivo;
+  }>({ task: null, motivo: "adicionar" });
+
   const activeUserTimer = (boardQuery.data?.timeEntries ?? []).find(
     (entry) => entry.user_id === user?.id && entry.ended_at === null
   );
@@ -1284,6 +1319,20 @@ export default function Tasks() {
 
     setLocalTasks(next);
     moveTask.mutate({ previous, next });
+
+    // Foi para "Concluído" agora: o tempo gasto não pode sumir.
+    if (movingTask.status !== "done" && targetStatus === "done" && canEditContent) {
+      if (activeUserTimer?.task_id === movingTask.id) {
+        // Cronômetro rodando nesta tarefa: para e registra, sem perguntar.
+        toggleTimer.mutate(movingTask.id);
+      } else if (!(timeEntriesByTaskId.get(movingTask.id) ?? []).length) {
+        // Nenhum tempo registrado por ninguém: pergunta quanto levou.
+        setTempoDialog({
+          task: { id: movingTask.id, title: movingTask.title },
+          motivo: "concluida_sem_tempo",
+        });
+      }
+    }
   };
 
   if (organizationLoading) {
@@ -1853,6 +1902,10 @@ export default function Tasks() {
                   nowMs={nowMs}
                   timerPending={toggleTimer.isPending}
                   onToggleTimer={canEditContent ? (taskId) => toggleTimer.mutate(taskId) : undefined}
+                  onAddTime={canEditContent ? (taskId) => {
+                    const alvo = localTasks.find((task) => task.id === taskId);
+                    if (alvo) setTempoDialog({ task: { id: alvo.id, title: alvo.title }, motivo: "adicionar" });
+                  } : undefined}
                   draggingDisabled={!canEditContent || moveTask.isPending}
                   onEdit={canEditContent ? openEditTask : undefined}
                   hasActiveFilters={hasActiveFilters}
@@ -1881,6 +1934,13 @@ export default function Tasks() {
             </DragOverlay>
           </DndContext>
         )}
+
+        <TaskTimeDialog
+          task={tempoDialog.task}
+          motivo={tempoDialog.motivo}
+          onClose={() => setTempoDialog((atual) => ({ ...atual, task: null }))}
+          onSaved={() => queryClient.invalidateQueries({ queryKey: ["tasks-board", organizationId] })}
+        />
 
         {organizationId && user && (
           <PullFromProductionDialog

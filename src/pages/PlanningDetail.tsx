@@ -164,6 +164,7 @@ export default function PlanningDetail() {
     },
     enabled: !!planningId,
   });
+  const reelPosts = (posts ?? []).filter((post) => post.content_type === "reels");
 
   const openPostEditor = useCallback(
     (postId: string) => {
@@ -285,6 +286,7 @@ export default function PlanningDetail() {
   const [scriptInstructions, setScriptInstructions] = useState("");
   const [scriptReferences, setScriptReferences] = useState("");
   const [scriptScenes, setScriptScenes] = useState<Scene[]>([]);
+  const [scriptPostId, setScriptPostId] = useState("");
 
   const resetScriptForm = () => {
     setShowScriptForm(false);
@@ -294,6 +296,23 @@ export default function PlanningDetail() {
     setScriptInstructions("");
     setScriptReferences("");
     setScriptScenes([]);
+    setScriptPostId("");
+  };
+
+  const startNewScript = () => {
+    if (showScriptForm && !editingScriptId) {
+      resetScriptForm();
+      return;
+    }
+
+    setEditingScriptId(null);
+    setScriptTitle("");
+    setScriptText("");
+    setScriptInstructions("");
+    setScriptReferences("");
+    setScriptScenes([]);
+    setScriptPostId(reelPosts.length === 1 ? reelPosts[0].id : "");
+    setShowScriptForm(true);
   };
 
   const copySingleScriptSpokenText = async (script: ScriptLaudaSource) => {
@@ -312,7 +331,16 @@ export default function PlanningDetail() {
     setScriptInstructions(script.editing_instructions || "");
     setScriptReferences(script.references_notes || "");
     setScriptScenes(parseScenes(script.scenes));
+    setScriptPostId(script.post_id || "");
     setShowScriptForm(true);
+  };
+
+  const scriptReelLabel = (postId: string | null | undefined) => {
+    if (!postId) return "Sem Reel vinculado — a etapa da Produção não será marcada";
+    const reelIndex = reelPosts.findIndex((post) => post.id === postId);
+    return reelIndex >= 0
+      ? `Ligado ao Reel ${reelIndex + 1}`
+      : "O Reel vinculado não existe mais neste planejamento";
   };
 
   const saveScript = useMutation({
@@ -323,6 +351,9 @@ export default function PlanningDetail() {
       // teleprompter, sugestões) sem a pessoa ter que manter dois textos.
       const spoken = scenes ? scenesSpokenText(scenes) : scriptText.trim();
       if (!spoken) throw new Error("Roteiro não pode estar vazio");
+      if (reelPosts.length > 0 && !scriptPostId) {
+        throw new Error("Selecione a qual Reel este roteiro pertence");
+      }
 
       const finalTitle = scriptTitle.trim() || `Roteiro ${(videoScripts?.length ?? 0) + 1}`;
       const payload = {
@@ -331,6 +362,7 @@ export default function PlanningDetail() {
         editing_instructions: scriptInstructions?.trim() || null,
         references_notes: scriptReferences?.trim() || null,
         scenes,
+        post_id: scriptPostId || null,
       };
 
       if (editingScriptId) {
@@ -892,7 +924,7 @@ export default function PlanningDetail() {
             >
               <ScrollText className="mr-1 h-4 w-4" /> Ver lauda
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setShowScriptForm(!showScriptForm)}>
+            <Button variant="outline" size="sm" onClick={startNewScript}>
               <Plus className="h-4 w-4 mr-1" /> Roteiro
             </Button>
           </div>
@@ -901,6 +933,30 @@ export default function PlanningDetail() {
         {showScriptForm && (
           <Card>
             <CardContent className="p-4 space-y-3">
+              <div className="space-y-2">
+                <Label>Reel deste roteiro</Label>
+                {reelPosts.length > 0 ? (
+                  <Select value={scriptPostId} onValueChange={setScriptPostId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecione a peça do planejamento" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {reelPosts.map((post, index) => (
+                        <SelectItem key={post.id} value={post.id}>
+                          Reel {index + 1}{post.caption?.trim() ? ` — ${post.caption.trim().slice(0, 60)}` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                    Adicione um Reel ao planejamento para ligar o roteiro à Produção.
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Ao salvar um roteiro com texto, a etapa Roteiro dessa peça é concluída automaticamente no quadro de Produção.
+                </p>
+              </div>
               <div className="space-y-2">
                 <Label>Tema do vídeo</Label>
                 <Input value={scriptTitle} onChange={(e) => setScriptTitle(e.target.value)} placeholder="Ex: Dicas de marketing digital" />
@@ -956,6 +1012,9 @@ export default function PlanningDetail() {
                       </Button>
                     </div>
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    {scriptReelLabel(script.post_id)}
+                  </p>
                   {script.spoken_text && (
                     <div className="rounded-lg bg-muted p-3">
                       <p className="text-xs font-medium text-muted-foreground mb-1">📝 Texto falado</p>

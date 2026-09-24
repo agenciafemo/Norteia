@@ -2723,7 +2723,9 @@ export type Database = {
         Row: {
           blog_body: string | null
           caption: string | null
+          carousel_copy: Json
           content_type: string | null
+          copy_text: string | null
           cover_image_url: string | null
           created_at: string | null
           hashtags: string | null
@@ -2743,7 +2745,9 @@ export type Database = {
         Insert: {
           blog_body?: string | null
           caption?: string | null
+          carousel_copy?: Json
           content_type?: string | null
+          copy_text?: string | null
           cover_image_url?: string | null
           created_at?: string | null
           hashtags?: string | null
@@ -2763,7 +2767,9 @@ export type Database = {
         Update: {
           blog_body?: string | null
           caption?: string | null
+          carousel_copy?: Json
           content_type?: string | null
+          copy_text?: string | null
           cover_image_url?: string | null
           created_at?: string | null
           hashtags?: string | null
@@ -3858,6 +3864,7 @@ export type Database = {
           id: string
           organization_id: string
           planning_id: string
+          post_id: string | null
           position: number | null
           references_notes: string | null
           scenes: Json | null
@@ -3871,6 +3878,7 @@ export type Database = {
           id?: string
           organization_id: string
           planning_id: string
+          post_id?: string | null
           position?: number | null
           references_notes?: string | null
           scenes?: Json | null
@@ -3884,6 +3892,7 @@ export type Database = {
           id?: string
           organization_id?: string
           planning_id?: string
+          post_id?: string | null
           position?: number | null
           references_notes?: string | null
           scenes?: Json | null
@@ -3904,6 +3913,13 @@ export type Database = {
             columns: ["planning_id"]
             isOneToOne: false
             referencedRelation: "plannings"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "video_scripts_post_id_fkey"
+            columns: ["post_id"]
+            isOneToOne: false
+            referencedRelation: "posts"
             referencedColumns: ["id"]
           },
         ]

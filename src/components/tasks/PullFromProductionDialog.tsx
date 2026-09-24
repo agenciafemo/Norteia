@@ -25,7 +25,13 @@ interface PecaPendente {
   piece_number: number;
   title: string | null;
   client_id: string | null;
-  production_item_steps: Array<{ label: string; position: number; done: boolean }>;
+  production_item_steps: Array<{
+    id: string;
+    label: string;
+    position: number;
+    done: boolean;
+    assignee_id: string | null;
+  }>;
 }
 
 export interface PullMember {
@@ -72,7 +78,7 @@ export function PullFromProductionDialog({
     queryFn: async () => {
       let query = (supabase as AnyClient)
         .from("production_items")
-        .select("id, content_type, piece_number, title, client_id, production_item_steps(label, position, done)")
+        .select("id, content_type, piece_number, title, client_id, production_item_steps(id, label, position, done, assignee_id)")
         .eq("organization_id", organizationId)
         // Peça já enviada tem task_id. Filtrar no servidor evita trazer o
         // histórico inteiro só para descartá-lo na tela.
@@ -123,9 +129,11 @@ export function PullFromProductionDialog({
             clientId: peca.client_id,
             titulo: tituloDaPeca(peca),
             etapas: (peca.production_item_steps ?? []).map((etapa) => ({
+              id: etapa.id,
               label: etapa.label,
               position: etapa.position,
               done: etapa.done,
+              assigneeId: etapa.assignee_id,
             })),
             assigneeId: responsavel,
             dueDate: prazo,

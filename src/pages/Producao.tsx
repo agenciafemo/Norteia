@@ -389,9 +389,11 @@ export default function Producao() {
         clientId: paraKanban.client_id,
         titulo: tituloDaPeca(paraKanban),
         etapas: (paraKanban.production_item_steps ?? []).map((etapa) => ({
+          id: etapa.id,
           label: etapa.label,
           position: etapa.position,
           done: etapa.done,
+          assigneeId: etapa.assignee_id,
         })),
         assigneeId: kanbanResponsavel,
         dueDate: kanbanPrazo,

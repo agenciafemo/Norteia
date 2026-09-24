@@ -108,6 +108,156 @@ export async function createTeamEvent(input: {
   return { id: ev.id as string };
 }
 
+/**
+ * Quem entra e quem sai quando a lista de participantes muda.
+ *
+ * Fica separado da chamada ao banco porque errar aqui apaga resposta de gente:
+ * quem continua na lista NÃO é tocado, senão um "declined" viraria "accepted"
+ * toda vez que o criador salvasse o evento por outro motivo.
+ */
+export function diffParticipantes(
+  atuais: string[],
+  desejados: string[],
+): { adicionar: string[]; remover: string[] } {
+  const antes = new Set(atuais);
+  const depois = new Set(desejados);
+  return {
+    adicionar: [...depois].filter((id) => !antes.has(id)),
+    remover: [...antes].filter((id) => !depois.has(id)),
+  };
+}
+
+/**
+ * Mover o início arrasta o fim junto, preservando a duração — é o que o
+ * calendário do Google faz e o que a pessoa espera ao corrigir um horário.
+ *
+ * Sem isto, mudar 09:00→11:30 num evento que terminava 10:00 deixava o fim
+ * para trás do início, e o evento passava a acabar antes de começar.
+ * Devolve `fim` intacto quando não há como calcular a duração.
+ */
+export function moverFim(inicioAntigo: string, fim: string, inicioNovo: string): string {
+  const minutos = (hhmm: string) => {
+    const [h, m] = hhmm.split(":").map(Number);
+    return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
+  };
+  const de = minutos(inicioAntigo);
+  const ate = minutos(fim);
+  const novo = minutos(inicioNovo);
+  if (de === null || ate === null || novo === null) return fim;
+
+  const duracao = ate - de;
+  if (duracao <= 0) return fim;
+  // Passou da meia-noite: o campo é só de hora, então prende no fim do dia em
+  // vez de voltar para 00:xx e inventar um evento no passado.
+  const total = Math.min(novo + duracao, 23 * 60 + 59);
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/**
+ * Editar um evento já criado — o que faltava para o calendário funcionar como
+ * o do Google: quem criou errava a hora e só podia excluir e refazer, e aí
+ * todo mundo perdia a confirmação de presença.
+ *
+ * Mudar a data de uma captação não precisa de nada aqui: o gatilho
+ * sync_team_capture_to_production dispara em UPDATE de starts_at e reagenda os
+ * Reels do planejamento sozinho.
+ */
+export async function updateTeamEvent(input: {
+  eventId: string;
+  organizationId: string;
+  createdBy: string;
+  title: string;
+  description: string | null;
+  location: string | null;
+  meetingLink: string | null;
+  startsAt: string;
+  endsAt: string | null;
+  attendeeIds: string[];
+  /** Horário anterior: se mudou, todo mundo é avisado do novo. */
+  previousStartsAt?: string;
+}): Promise<void> {
+  const { error } = await (supabase as AnyClient)
+    .from("team_events")
+    .update({
+      title: input.title,
+      description: input.description,
+      location: input.location,
+      meeting_link: input.meetingLink,
+      starts_at: input.startsAt,
+      ends_at: input.endsAt,
+    })
+    .eq("id", input.eventId);
+  if (error) throw new Error(error.message);
+
+  const { data: atuais, error: erroAtuais } = await (supabase as AnyClient)
+    .from("team_event_attendees")
+    .select("user_id")
+    .eq("event_id", input.eventId);
+  if (erroAtuais) throw new Error(erroAtuais.message);
+
+  // O criador continua na lista mesmo sem se marcar como participante.
+  const desejados = Array.from(new Set([input.createdBy, ...input.attendeeIds]));
+  const { adicionar, remover } = diffParticipantes(
+    ((atuais ?? []) as Array<{ user_id: string }>).map((linha) => linha.user_id),
+    desejados,
+  );
+
+  if (adicionar.length > 0) {
+    const { error: erroInsert } = await (supabase as AnyClient)
+      .from("team_event_attendees")
+      .insert(adicionar.map((uid) => ({
+        event_id: input.eventId,
+        organization_id: input.organizationId,
+        user_id: uid,
+        response: "accepted",
+      })));
+    if (erroInsert) throw new Error(erroInsert.message);
+  }
+
+  if (remover.length > 0) {
+    const { error: erroDelete } = await (supabase as AnyClient)
+      .from("team_event_attendees")
+      .delete()
+      .eq("event_id", input.eventId)
+      .in("user_id", remover);
+    if (erroDelete) throw new Error(erroDelete.message);
+  }
+
+  // Avisos no sininho: quem entrou agora, e todo mundo se a hora mudou.
+  try {
+    const quando = new Date(input.startsAt).toLocaleString("pt-BR", {
+      dateStyle: "short",
+      timeStyle: "short",
+    });
+    const remarcado = !!input.previousStartsAt && input.previousStartsAt !== input.startsAt;
+    const avisar = new Map<string, { title: string; body: string }>();
+
+    if (remarcado) {
+      for (const uid of desejados) {
+        if (uid === input.createdBy) continue;
+        avisar.set(uid, { title: `📅 Evento remarcado: ${input.title}`, body: `Agora em ${quando}` });
+      }
+    }
+    for (const uid of adicionar) {
+      if (uid === input.createdBy) continue;
+      avisar.set(uid, { title: `📅 Você entrou em: ${input.title}`, body: quando });
+    }
+
+    if (avisar.size > 0) {
+      await (supabase as AnyClient).from("notifications").insert(
+        [...avisar].map(([uid, aviso]) => ({
+          organization_id: input.organizationId,
+          user_id: uid,
+          title: aviso.title,
+          body: aviso.body,
+          type: "team_event",
+          read: false,
+        })),
+      );
+    }
+  } catch { /* best-effort */ }
+}
+
 // Sair do evento (declined) ou voltar (accepted) — a própria pessoa.
 export async function setRsvp(input: {
   eventId: string;

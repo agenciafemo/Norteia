@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { CalendarIcon, Image, Video, Layers, Save, Trash2, Send, FileText, Copy, ChevronLeft, ChevronRight, X, FolderInput, MoreHorizontal, ExternalLink, Pencil } from "lucide-react";
 import { isSafeExternalUrl } from "@/lib/externalLink";
+import { postStatusBadge, postStatusLabel } from "@/lib/postStatus";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { toast } from "sonner";
@@ -53,21 +54,6 @@ const CONTENT_TYPE_LABELS: Record<string, string> = {
   blog: "Blog",
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  draft: "Rascunho",
-  pending: "Pendente",
-  approved: "Aprovado",
-  needs_revision: "Em revisão",
-};
-
-// Mesma leitura de cor do quadro de planejamento: aprovado é o único verde,
-// revisão é âmbar. Cor aqui significa estado da peça, nada mais.
-const STATUS_BADGE: Record<string, string> = {
-  draft: "border-muted-foreground/20 bg-muted text-muted-foreground",
-  pending: "border-muted-foreground/20 bg-muted text-muted-foreground",
-  approved: "border-emerald-500/30 bg-emerald-500/15 text-emerald-600",
-  needs_revision: "border-amber-500/30 bg-amber-500/15 text-amber-600",
-};
 
 interface PostDraftData {
   caption: string;
@@ -710,8 +696,8 @@ export function PostEditor({ postId, planningId, clientId, onClose, clientNotes 
               {CONTENT_TYPE_LABELS[contentType] ?? "Post"}
               {publishDate ? ` · ${format(publishDate, "dd/MM")}` : ""}
             </DialogTitle>
-            <Badge variant="outline" className={STATUS_BADGE[status] ?? STATUS_BADGE.draft}>
-              {STATUS_LABELS[status] ?? status}
+            <Badge variant="outline" className={postStatusBadge(status)}>
+              {postStatusLabel(status)}
             </Badge>
             {/* dirtyRef é atualizado no corpo do componente, antes deste render,
                 e todo keystroke re-renderiza — então ler .current aqui é fiel.

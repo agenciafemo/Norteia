@@ -7,7 +7,7 @@ import {
 import { ptBR } from "date-fns/locale";
 import {
   CalendarDays, ChevronLeft, ChevronRight, Clock, Link as LinkIcon, Loader2,
-  LogOut, MapPin, Plus, Trash2, Users,
+  LogOut, MapPin, Pencil, Plus, Trash2, Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -30,7 +30,8 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
-  createTeamEvent, deleteTeamEvent, loadWeekEvents, setRsvp, type TeamEvent,
+  createTeamEvent, deleteTeamEvent, loadWeekEvents, moverFim, setRsvp, updateTeamEvent,
+  type TeamEvent,
 } from "@/lib/teamCalendar";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -121,6 +122,8 @@ export default function AgendaEquipe() {
   const [filterUser, setFilterUser] = useState<string>("all"); // all | mine | userId
   const [createOpen, setCreateOpen] = useState(false);
   const [detail, setDetail] = useState<TeamEvent | null>(null);
+  // Evento em edição. null = o mesmo formulário está criando um novo.
+  const [editando, setEditando] = useState<TeamEvent | null>(null);
 
   const { data: members = [] } = useQuery({
     queryKey: ["cal-members", organizationId],
@@ -271,6 +274,69 @@ export default function AgendaEquipe() {
     onError: (e) => toast.error((e as Error).message),
   });
 
+  /** Quem criou sempre pode mexer; quem edita conteúdo da agência também. */
+  const podeMexer = (evento: TeamEvent) => canEdit || evento.created_by === user?.id;
+
+  const abrirEdicao = (evento: TeamEvent) => {
+    const inicio = parseISO(evento.starts_at);
+    setForm({
+      title: evento.title,
+      date: format(inicio, "yyyy-MM-dd"),
+      start: format(inicio, "HH:mm"),
+      end: evento.ends_at ? format(parseISO(evento.ends_at), "HH:mm") : "",
+      location: evento.location ?? "",
+      link: evento.meeting_link ?? "",
+      description: evento.description ?? "",
+      // O criador entra sozinho na lista; aqui só os convidados.
+      attendees: evento.team_event_attendees
+        .map((pessoa) => pessoa.user_id)
+        .filter((id) => id !== evento.created_by),
+      recordAndTranscribe: evento.record_and_transcribe,
+      eventType: evento.event_type,
+      clientId: evento.client_id ?? "",
+      planningId: evento.planning_id ?? "",
+      isDefaultCapture: evento.is_default_capture,
+    });
+    setEditando(evento);
+    setDetail(null);
+    setCreateOpen(true);
+  };
+
+  const salvar = useMutation({
+    mutationFn: async () => {
+      if (!editando) throw new Error("Nenhum evento em edição.");
+      if (!form.date) throw new Error("Preencha a data.");
+      if (!form.title.trim()) throw new Error("Preencha o título.");
+      if (form.end && form.end <= (form.start || "09:00")) {
+        throw new Error("O fim precisa ser depois do início.");
+      }
+      const startsAt = new Date(`${form.date}T${form.start || "09:00"}:00`).toISOString();
+      await updateTeamEvent({
+        eventId: editando.id,
+        organizationId: organizationId!,
+        createdBy: editando.created_by,
+        title: form.title.trim(),
+        description: form.description.trim() || null,
+        location: form.location.trim() || null,
+        meetingLink: form.link.trim() || null,
+        startsAt,
+        endsAt: form.end ? new Date(`${form.date}T${form.end}:00`).toISOString() : null,
+        attendeeIds: form.attendees,
+        previousStartsAt: editando.starts_at,
+      });
+    },
+    onSuccess: () => {
+      toast.success(editando?.event_type === "capture"
+        ? "Evento salvo. A data foi aplicada aos Reels do planejamento."
+        : "Evento salvo.");
+      setCreateOpen(false);
+      setEditando(null);
+      resetForm();
+      queryClient.invalidateQueries({ queryKey: ["team-events", organizationId] });
+    },
+    onError: (e) => toast.error((e as Error).message),
+  });
+
   const rsvp = useMutation({
     mutationFn: (input: { eventId: string; response: "accepted" | "declined" }) =>
       setRsvp({ eventId: input.eventId, organizationId: organizationId!, userId: user!.id, response: input.response }),
@@ -328,7 +394,7 @@ export default function AgendaEquipe() {
               </SelectContent>
             </Select>
             {canEdit && (
-              <Button className="gap-2" onClick={() => { resetForm(); setCreateOpen(true); }}>
+              <Button className="gap-2" onClick={() => { resetForm(); setEditando(null); setCreateOpen(true); }}>
                 <Plus className="h-4 w-4" /> Novo evento
               </Button>
             )}
@@ -432,12 +498,25 @@ export default function AgendaEquipe() {
         onConfirm={handleConfirmConsent}
       />
 
-      {/* Diálogo: novo evento */}
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+      {/* Diálogo: novo evento — e o mesmo formulário edita um existente */}
+      <Dialog
+        open={createOpen}
+        onOpenChange={(aberto) => {
+          if (!aberto) setEditando(null);
+          setCreateOpen(aberto);
+        }}
+      >
         <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
-          <DialogHeader><DialogTitle>Novo evento / reunião</DialogTitle></DialogHeader>
-          <form className="space-y-3" onSubmit={(ev) => { ev.preventDefault(); create.mutate(); }}>
-            <div className="space-y-1.5">
+          <DialogHeader>
+            <DialogTitle>{editando ? "Editar evento" : "Novo evento / reunião"}</DialogTitle>
+          </DialogHeader>
+          <form
+            className="space-y-3"
+            onSubmit={(ev) => { ev.preventDefault(); (editando ? salvar : create).mutate(); }}
+          >
+            {/* O tipo não muda depois de criado: captação carrega cliente,
+                planejamento e a data dos Reels junto. */}
+            <div className={cn("space-y-1.5", editando && "hidden")}>
               <Label>Tipo</Label>
               <Select value={form.eventType} onValueChange={(value: "event" | "meeting" | "capture") => setForm((f) => ({
                 ...f, eventType: value, clientId: value === "capture" ? f.clientId : "", planningId: value === "capture" ? f.planningId : "",
@@ -450,7 +529,13 @@ export default function AgendaEquipe() {
                 </SelectContent>
               </Select>
             </div>
-            {form.eventType === "capture" && (
+            {editando?.event_type === "capture" && (
+              <p className="rounded-lg border border-brand/30 bg-brand/5 p-3 text-xs text-brand">
+                🎬 Captação de {clients.find((client) => client.id === editando.client_id)?.name ?? "cliente"}.
+                Mudar a data aqui reagenda a captação dos Reels do planejamento.
+              </p>
+            )}
+            {form.eventType === "capture" && !editando && (
               <div className="grid grid-cols-2 gap-2 rounded-lg border border-brand/30 bg-brand/5 p-3">
                 <div className="space-y-1.5">
                   <Label className="text-xs">Cliente</Label>
@@ -481,14 +566,17 @@ export default function AgendaEquipe() {
             </div>
             <div className="grid grid-cols-3 gap-2">
               <div className="space-y-1.5"><Label className="text-xs">Data</Label><Input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} /></div>
-              <div className="space-y-1.5"><Label className="text-xs">Início</Label><Input type="time" value={form.start} onChange={(e) => setForm((f) => ({ ...f, start: e.target.value }))} /></div>
+              {/* Mover o início arrasta o fim junto, como no Google. */}
+              <div className="space-y-1.5"><Label className="text-xs">Início</Label><Input type="time" value={form.start} onChange={(e) => setForm((f) => ({ ...f, start: e.target.value, end: moverFim(f.start, f.end, e.target.value) }))} /></div>
               <div className="space-y-1.5"><Label className="text-xs">Fim</Label><Input type="time" value={form.end} onChange={(e) => setForm((f) => ({ ...f, end: e.target.value }))} /></div>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1.5"><Label className="text-xs">Local</Label><Input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} placeholder="Sala / escritório" /></div>
               <div className="space-y-1.5"><Label className="text-xs">Link da reunião</Label><Input value={form.link} onChange={(e) => setForm((f) => ({ ...f, link: e.target.value }))} placeholder="https://meet…" /></div>
             </div>
-            {REUNIOES_ENABLED && (
+            {/* Gravação some na edição: o bot é agendado na criação, e ligar
+                aqui criaria uma segunda reunião para a mesma chamada. */}
+            {REUNIOES_ENABLED && !editando && (
               <div className="flex items-center justify-between rounded-lg border p-3">
                 <div>
                   <Label className="text-xs">Gravar e transcrever esta reunião</Label>
@@ -525,9 +613,22 @@ export default function AgendaEquipe() {
                 ))}
               </div>
             </div>
-            <div className="flex justify-end pt-1">
-              <Button type="submit" disabled={create.isPending || (form.eventType !== "capture" && !form.title.trim())}>
-                {create.isPending ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null} Criar evento
+            <div className="flex justify-end gap-2 pt-1">
+              {editando && (
+                <Button type="button" variant="outline" onClick={() => { setCreateOpen(false); setEditando(null); }}>
+                  Cancelar
+                </Button>
+              )}
+              <Button
+                type="submit"
+                disabled={
+                  (editando ? salvar.isPending : create.isPending)
+                  || (form.eventType !== "capture" && !form.title.trim())
+                }
+              >
+                {(editando ? salvar.isPending : create.isPending)
+                  ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+                {editando ? "Salvar alterações" : "Criar evento"}
               </Button>
             </div>
           </form>
@@ -580,10 +681,15 @@ export default function AgendaEquipe() {
                       Confirmar presença
                     </Button>
                   )}
-                  {(canEdit || detail.created_by === user?.id) && (
-                    <Button size="sm" variant="ghost" className="ml-auto gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive" disabled={remove.isPending} onClick={() => remove.mutate(detail.id)}>
-                      <Trash2 className="h-4 w-4" /> Excluir
-                    </Button>
+                  {podeMexer(detail) && (
+                    <>
+                      <Button size="sm" variant="outline" className="ml-auto gap-1.5" onClick={() => abrirEdicao(detail)}>
+                        <Pencil className="h-4 w-4" /> Editar
+                      </Button>
+                      <Button size="sm" variant="ghost" className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive" disabled={remove.isPending} onClick={() => remove.mutate(detail.id)}>
+                        <Trash2 className="h-4 w-4" /> Excluir
+                      </Button>
+                    </>
                   )}
                 </div>
               </div>

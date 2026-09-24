@@ -20,10 +20,9 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DateRangeFields } from "@/components/filters/DateRangeFields";
 import { VincularPlanejamentoDialog } from "@/components/producao/VincularPlanejamentoDialog";
-import { usePersistedState } from "@/hooks/usePersistedState";
-import { hasActiveDateRange, isDayWithinRange } from "@/lib/dateRange";
+import { postStatusBadge, postStatusLabel } from "@/lib/postStatus";
+import { postThumbnailUrl } from "@/lib/postThumbnail";
 import { cn } from "@/lib/utils";
 import {
   enviarPecaParaKanban,
@@ -78,7 +77,17 @@ type Item = {
 
 type Member = { user_id: string; display_name: string; avatar_url: string | null };
 type ClientRow = { id: string; name: string };
-type ProductionDateFilter = { from: string; to: string };
+
+/** O post do planejamento que a peça espelha — o conteúdo em si. */
+type PostResumo = {
+  id: string;
+  caption: string | null;
+  content_type: string | null;
+  cover_image_url: string | null;
+  media_urls: unknown;
+  publish_date: string | null;
+  status: string | null;
+};
 
 const GROUP_ORDER = [...EDITABLE_PIECE_TYPES, "extra"];
 
@@ -125,10 +134,6 @@ export default function Producao() {
   const queryClient = useQueryClient();
 
   const [selectedClient, setSelectedClient] = useState<string>("");
-  const [dateFiltersByOrganization, setDateFiltersByOrganization] = usePersistedState<Record<string, ProductionDateFilter>>(
-    "norteia.production.date-filters.v1",
-    {},
-  );
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [configOpen, setConfigOpen] = useState(false);
   const [modelosOpen, setModelosOpen] = useState(false);
@@ -213,25 +218,34 @@ export default function Producao() {
     refetchOnMount: "always",
   });
 
-  const dateFilter = organizationId
-    ? dateFiltersByOrganization[organizationId] ?? { from: "", to: "" }
-    : { from: "", to: "" };
-  const dateFrom = typeof dateFilter.from === "string" ? dateFilter.from : "";
-  const dateTo = typeof dateFilter.to === "string" ? dateFilter.to : "";
-  const hasDateFilter = hasActiveDateRange(dateFrom, dateTo);
-  const updateDateFilter = (patch: Partial<ProductionDateFilter>) => {
-    if (!organizationId) return;
-    setDateFiltersByOrganization({
-      ...dateFiltersByOrganization,
-      [organizationId]: { from: dateFrom, to: dateTo, ...patch },
-    });
-  };
-  const filteredItems = useMemo(() => {
-    if (!hasDateFilter) return items;
-    return items.filter((item) => (item.production_item_steps ?? []).some((step) =>
-      isDayWithinRange(localDay(step.scheduled_at), dateFrom, dateTo)
-    ));
-  }, [dateFrom, dateTo, hasDateFilter, items]);
+  // Conteúdo do planejamento de cada peça: é o post que diz do que a peça
+  // trata. Sem isto o quadro mostrava "Reels 3" e mais nada, e quem produz
+  // tinha de abrir o planejamento em outra aba para saber o que fazer.
+  const postIds = useMemo(
+    () => [...new Set(items.map((item) => item.post_id).filter((id): id is string => !!id))].sort(),
+    [items],
+  );
+  const { data: posts = [] } = useQuery({
+    queryKey: ["prod-posts", organizationId, postIds.join(",")],
+    queryFn: async () => {
+      const { data, error } = await (supabase as AnyClient).from("posts")
+        .select("id, caption, content_type, cover_image_url, media_urls, publish_date, status")
+        .in("id", postIds);
+      if (error) throw new Error(error.message);
+      return (data ?? []) as PostResumo[];
+    },
+    enabled: !!organizationId && postIds.length > 0,
+  });
+  const postById = useMemo(() => {
+    const mapa = new Map<string, PostResumo>();
+    for (const post of posts) mapa.set(post.id, post);
+    return mapa;
+  }, [posts]);
+  const postDaPeca = (piece: Item) => (piece.post_id ? postById.get(piece.post_id) ?? null : null);
+
+  // O quadro mostra o mês inteiro porque planejamento é mensal: filtrar por
+  // data escondia peça cuja etapa ainda não tinha dia marcado.
+  const filteredItems = items;
 
   // ---- Resumo por cliente (onde está o gargalo da operação) ----
   const summary = useMemo(() => {
@@ -643,32 +657,10 @@ export default function Producao() {
             </Select>
           </div>
 
-          <DateRangeFields
-            idPrefix="production-scheduled"
-            from={dateFrom}
-            to={dateTo}
-            fromLabel="Etapas de"
-            toLabel="Etapas até"
-            onFromChange={(value) => updateDateFilter({ from: value })}
-            onToChange={(value) => updateDateFilter({ to: value })}
-          />
-
           <div className="flex h-9 items-center gap-2 sm:ml-auto">
             <span className="text-xs text-muted-foreground">
-              {hasDateFilter ? `${clientItems.length} de ${totalClientItems}` : clientItems.length}{" "}
-              {totalClientItems === 1 ? "peça" : "peças"}
+              {clientItems.length} {totalClientItems === 1 ? "peça" : "peças"}
             </span>
-            {hasDateFilter && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-8 gap-1.5 text-xs text-muted-foreground"
-                onClick={() => updateDateFilter({ from: "", to: "" })}
-              >
-                <RotateCcw className="h-3.5 w-3.5" /> Limpar data
-              </Button>
-            )}
           </div>
         </div>
 
@@ -679,13 +671,9 @@ export default function Producao() {
         ) : groups.length === 0 ? (
           <div className="rounded-2xl border border-border/70 bg-card/50 px-6 py-14 text-center">
             <Workflow className="mx-auto h-7 w-7 text-muted-foreground/60" />
-            <p className="mt-2 text-sm font-medium">
-              {hasDateFilter ? "Nenhuma peça agendada neste período" : "Nenhuma peça em produção"}
-            </p>
+            <p className="mt-2 text-sm font-medium">Nenhuma peça em produção</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              {hasDateFilter
-                ? "A peça aparece quando ao menos uma etapa possui data dentro do intervalo."
-                : "As peças aparecem aqui quando um planejamento é criado para este cliente."}
+              As peças aparecem aqui quando um planejamento é criado para este cliente.
             </p>
           </div>
         ) : (
@@ -785,6 +773,53 @@ export default function Producao() {
                                 </Link>
                               )}
                             </div>
+
+                            {/* O conteúdo em si, direto do planejamento: sem
+                                isto o quadro mostrava "Reels 3" e nada mais, e
+                                quem produz abria o planejamento noutra aba
+                                para saber do que a peça tratava. */}
+                            {(() => {
+                              const post = postDaPeca(piece);
+                              if (!post) return null;
+                              const miniatura = postThumbnailUrl(post);
+                              const legenda = (post.caption ?? "")
+                                .split("\n")
+                                .map((linha) => linha.trim())
+                                .find((linha) => linha !== "");
+                              return (
+                                <div className="mb-2.5 flex gap-2.5 rounded-lg border border-border/60 bg-muted/20 p-2">
+                                  {miniatura && (
+                                    <img
+                                      src={miniatura}
+                                      alt=""
+                                      loading="lazy"
+                                      className="h-12 w-12 shrink-0 rounded-md object-cover"
+                                    />
+                                  )}
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      {post.publish_date && (
+                                        <span className="text-[11px] font-medium tabular-nums">
+                                          {format(parseISO(post.publish_date), "dd/MM")}
+                                        </span>
+                                      )}
+                                      <span className={cn(
+                                        "rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+                                        postStatusBadge(post.status),
+                                      )}>
+                                        {postStatusLabel(post.status)}
+                                      </span>
+                                    </div>
+                                    <p className={cn(
+                                      "mt-0.5 line-clamp-2 text-xs",
+                                      legenda ? "text-muted-foreground" : "italic text-muted-foreground/70",
+                                    )}>
+                                      {legenda ?? "Sem legenda no planejamento"}
+                                    </p>
+                                  </div>
+                                </div>
+                              );
+                            })()}
 
                             {/* Correção pedida pelo cliente */}
                             {(() => {

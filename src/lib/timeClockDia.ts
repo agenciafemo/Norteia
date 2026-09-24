@@ -246,6 +246,25 @@ export function classificarBatida(
 }
 
 /**
+ * Classifica o clique do botão principal sem perder uma escolha explícita.
+ *
+ * Um ajuste de entrada ainda pendente faz o estado combinado parecer que a
+ * pessoa já está trabalhando. Quando ela confirma "estou chegando agora",
+ * porém, essa primeira batida oficial continua sendo entrada em qualquer
+ * horário; o ajuste pendente ainda não pode transformar a escolha em saída.
+ */
+export function classificarBatidaDoBotao(
+  estado: EstadoDoDia,
+  segundoDoDia: number,
+  almocoFeito: boolean,
+  chegadaAgora = false,
+): PunchKind {
+  return chegadaAgora
+    ? "entrada"
+    : classificarBatida(estado, segundoDoDia, almocoFeito);
+}
+
+/**
  * Primeira batida do dia depois da janela da entrada: o horário sozinho não
  * diz se a pessoa está chegando tarde ou se esqueceu a entrada e está saindo
  * para o almoço. Em 16/09 a saída das 12:00 virou entrada e estragou o dia

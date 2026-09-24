@@ -40,6 +40,7 @@ import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { toast } from "sonner";
 import { FrameioReviewPanel } from "@/components/planning/FrameioReviewPanel";
+import { moveCarouselCopy, normalizeCarouselCopy } from "@/lib/postCopy";
 
 const MONTHS_SHORT = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 const DRAFT_DEBOUNCE_MS = 500;
@@ -57,6 +58,8 @@ const CONTENT_TYPE_LABELS: Record<string, string> = {
 
 interface PostDraftData {
   caption: string;
+  copyText: string;
+  carouselCopy: string[];
   hashtags: string;
   contentType: string;
   publishDate: string | null;
@@ -77,6 +80,8 @@ function safeDraftUrl(url: string): string {
 function postToDraft(post: PostRow): PostDraftData {
   return {
     caption: post.caption || "",
+    copyText: post.copy_text || "",
+    carouselCopy: normalizeCarouselCopy(post.carousel_copy, Array.isArray(post.media_urls) ? post.media_urls.length : 0),
     hashtags: post.hashtags || "",
     contentType: post.content_type || "static",
     publishDate: post.publish_date || null,
@@ -116,6 +121,8 @@ export function PostEditor({ postId, planningId, clientId, onClose, clientNotes 
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [caption, setCaption] = useState("");
+  const [copyText, setCopyText] = useState("");
+  const [carouselCopy, setCarouselCopy] = useState<string[]>([]);
   const [hashtags, setHashtags] = useState("");
   const [contentType, setContentType] = useState("static");
   const [publishDate, setPublishDate] = useState<Date | undefined>();
@@ -170,6 +177,8 @@ export function PostEditor({ postId, planningId, clientId, onClose, clientNotes 
   const currentDraft = useMemo<PostDraftData>(
     () => ({
       caption,
+      copyText,
+      carouselCopy: normalizeCarouselCopy(carouselCopy, mediaUrls.length),
       hashtags,
       contentType,
       publishDate: publishDate ? format(publishDate, "yyyy-MM-dd") : null,
@@ -181,8 +190,10 @@ export function PostEditor({ postId, planningId, clientId, onClose, clientNotes 
     }),
     [
       blogBody,
+      carouselCopy,
       caption,
       contentType,
+      copyText,
       coverImageUrl,
       hashtags,
       mediaUrls,
@@ -200,6 +211,7 @@ export function PostEditor({ postId, planningId, clientId, onClose, clientNotes 
 
   const applyDraft = useCallback((draft: PostDraftData) => {
     setCaption(draft.caption ?? "");
+    setCopyText(draft.copyText ?? "");
     setHashtags(draft.hashtags ?? "");
     setContentType(draft.contentType ?? "static");
     setPublishDate(
@@ -209,7 +221,9 @@ export function PostEditor({ postId, planningId, clientId, onClose, clientNotes 
     );
     setVideoUrl(draft.videoUrl ?? "");
     setCoverImageUrl(draft.coverImageUrl ?? "");
-    setMediaUrls(Array.isArray(draft.mediaUrls) ? draft.mediaUrls : []);
+    const nextMediaUrls = Array.isArray(draft.mediaUrls) ? draft.mediaUrls : [];
+    setMediaUrls(nextMediaUrls);
+    setCarouselCopy(normalizeCarouselCopy(draft.carouselCopy, nextMediaUrls.length));
     setStatus(draft.status ?? "draft");
     setBlogBody(draft.blogBody ?? "");
   }, []);
@@ -384,6 +398,8 @@ export function PostEditor({ postId, planningId, clientId, onClose, clientNotes 
         .from("posts")
         .update({
           caption,
+          copy_text: copyText.trim() || null,
+          carousel_copy: normalizeCarouselCopy(carouselCopy, mediaUrls.length),
           hashtags,
           content_type: contentType,
           publish_date: publishDate ? format(publishDate, "yyyy-MM-dd") : null,
@@ -536,6 +552,7 @@ export function PostEditor({ postId, planningId, clientId, onClose, clientNotes 
     // capturado antes do loop. Sem o `prev`, remover ou reordenar um slide
     // durante o envio era desfeito quando o último arquivo terminava.
     setMediaUrls((prev) => [...prev, ...uploaded]);
+    setCarouselCopy((prev) => [...prev, ...uploaded.map(() => "")]);
     if (uploaded.length) toast.success(`${uploaded.length} arquivo(s) adicionado(s)!`);
     e.target.value = "";
   };
@@ -591,11 +608,13 @@ export function PostEditor({ postId, planningId, clientId, onClose, clientNotes 
     if (!carouselUrlInput.trim()) return;
     if (mediaUrls.length >= 20) { toast.error("Limite de 20 arquivos"); return; }
     setMediaUrls([...mediaUrls, carouselUrlInput.trim()]);
+    setCarouselCopy([...normalizeCarouselCopy(carouselCopy, mediaUrls.length), ""]);
     setCarouselUrlInput("");
   };
 
   const removeCarouselImage = (idx: number) => {
     setMediaUrls(mediaUrls.filter((_, i) => i !== idx));
+    setCarouselCopy(normalizeCarouselCopy(carouselCopy, mediaUrls.length).filter((_, i) => i !== idx));
   };
 
   const moveCarouselImage = (idx: number, dir: -1 | 1) => {
@@ -604,6 +623,7 @@ export function PostEditor({ postId, planningId, clientId, onClose, clientNotes 
     const arr = [...mediaUrls];
     [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
     setMediaUrls(arr);
+    setCarouselCopy(moveCarouselCopy(normalizeCarouselCopy(carouselCopy, mediaUrls.length), idx, dir));
   };
 
   // Qual conjunto o lightbox está mostrando. Antes isto era deduzido do tipo de
@@ -812,6 +832,63 @@ export function PostEditor({ postId, planningId, clientId, onClose, clientNotes 
               <p className="text-xs text-muted-foreground">
                 O slide 1 é a capa: é ele que aparece no quadro e no portal do cliente.
                 Aceita imagens e vídeos (mp4, mov, webm). Até 20 arquivos por carrossel.
+              </p>
+
+              {mediaUrls.length > 0 && (
+                <div className="space-y-3 border-t pt-3">
+                  <div>
+                    <Label>Copy por slide</Label>
+                    <p className="text-xs text-muted-foreground">
+                      O texto acompanha o slide quando ele é reordenado. Ao preencher qualquer slide, a etapa Copy da Produção é concluída ao salvar.
+                    </p>
+                  </div>
+                  {mediaUrls.map((url, idx) => (
+                    <div key={`${url}-${idx}`} className="grid gap-3 rounded-md border p-3 sm:grid-cols-[72px_1fr]">
+                      <div className="relative aspect-square overflow-hidden rounded-md bg-muted">
+                        {isVideo(url) ? (
+                          <div className="flex h-full items-center justify-center bg-black">
+                            <Video className="h-5 w-5 text-white/80" />
+                          </div>
+                        ) : (
+                          <img src={url} alt={`Slide ${idx + 1}`} className="h-full w-full object-cover" />
+                        )}
+                        <span className="absolute left-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                          {idx + 1}
+                        </span>
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor={`carousel-copy-${idx}`} className="text-xs">Slide {idx + 1}</Label>
+                        <Textarea
+                          id={`carousel-copy-${idx}`}
+                          value={normalizeCarouselCopy(carouselCopy, mediaUrls.length)[idx]}
+                          onChange={(event) => {
+                            const next = normalizeCarouselCopy(carouselCopy, mediaUrls.length);
+                            next[idx] = event.target.value;
+                            setCarouselCopy(next);
+                          }}
+                          placeholder="Escreva a mensagem deste slide..."
+                          rows={3}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {contentType === "static" && (
+            <div className="space-y-2">
+              <Label htmlFor="post-copy">Copy da arte</Label>
+              <Textarea
+                id="post-copy"
+                value={copyText}
+                onChange={(event) => setCopyText(event.target.value)}
+                placeholder="Escreva o texto que deve aparecer na arte..."
+                rows={5}
+              />
+              <p className="text-xs text-muted-foreground">
+                Copy é o texto da peça; legenda é o texto publicado junto dela. Ao salvar, a etapa Copy da Produção é concluída automaticamente.
               </p>
             </div>
           )}

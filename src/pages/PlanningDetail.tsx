@@ -38,7 +38,7 @@ import {
 } from "@/hooks/usePostEditorDraft";
 import { ScriptLaudaDialog } from "@/components/script/ScriptLaudaDialog";
 import { SceneEditor } from "@/components/script/SceneEditor";
-import { parseScenes, scenesSpokenText, serializeScenes, type Scene } from "@/lib/scriptScenes";
+import { emptyScene, parseScenes, scenesSpokenText, serializeScenes, type Scene } from "@/lib/scriptScenes";
 import {
   copyScriptSpokenText,
   type ScriptLaudaSource,
@@ -287,6 +287,9 @@ export default function PlanningDetail() {
   const [scriptReferences, setScriptReferences] = useState("");
   const [scriptScenes, setScriptScenes] = useState<Scene[]>([]);
   const [scriptPostId, setScriptPostId] = useState("");
+  const [scriptCompletedAt, setScriptCompletedAt] = useState<string | null>(null);
+  const [laudaScriptId, setLaudaScriptId] = useState<string | null>(null);
+  const [laudaDraft, setLaudaDraft] = useState<ScriptLaudaSource | null>(null);
 
   const resetScriptForm = () => {
     setShowScriptForm(false);
@@ -297,6 +300,7 @@ export default function PlanningDetail() {
     setScriptReferences("");
     setScriptScenes([]);
     setScriptPostId("");
+    setScriptCompletedAt(null);
   };
 
   const startNewScript = () => {
@@ -310,8 +314,11 @@ export default function PlanningDetail() {
     setScriptText("");
     setScriptInstructions("");
     setScriptReferences("");
-    setScriptScenes([]);
+    // O formato principal já nasce como lauda. Texto corrido continua
+    // disponível apenas ao editar roteiros antigos.
+    setScriptScenes([emptyScene()]);
     setScriptPostId(reelPosts.length === 1 ? reelPosts[0].id : "");
+    setScriptCompletedAt(null);
     setShowScriptForm(true);
   };
 
@@ -332,7 +339,35 @@ export default function PlanningDetail() {
     setScriptReferences(script.references_notes || "");
     setScriptScenes(parseScenes(script.scenes));
     setScriptPostId(script.post_id || "");
+    setScriptCompletedAt(script.completed_at || null);
     setShowScriptForm(true);
+  };
+
+  const scriptDraftForLauda = (): ScriptLaudaSource | null => {
+    const scenes = serializeScenes(scriptScenes);
+    const spoken = scenes ? scenesSpokenText(scenes) : scriptText.trim();
+    if (!spoken) return null;
+
+    return {
+      id: editingScriptId || "roteiro-em-edicao",
+      title: scriptTitle.trim() || "Roteiro sem título",
+      spoken_text: spoken,
+      editing_instructions: scriptInstructions.trim() || null,
+      references_notes: scriptReferences.trim() || null,
+      position: 0,
+      scenes,
+    };
+  };
+
+  const openDraftLauda = () => {
+    const draft = scriptDraftForLauda();
+    if (!draft) {
+      toast.error("Preencha ao menos uma fala para visualizar a lauda");
+      return;
+    }
+    setLaudaDraft(draft);
+    setLaudaScriptId(null);
+    setLaudaOpen(true);
   };
 
   const scriptReelLabel = (postId: string | null | undefined) => {
@@ -344,7 +379,7 @@ export default function PlanningDetail() {
   };
 
   const saveScript = useMutation({
-    mutationFn: async () => {
+    mutationFn: async ({ complete }: { complete: boolean }) => {
       const scenes = serializeScenes(scriptScenes);
       // Quando o roteiro está em blocos, a fala corrida é DERIVADA deles. Isso
       // mantém funcionando tudo que lê spoken_text (portal do cliente,
@@ -356,7 +391,7 @@ export default function PlanningDetail() {
       }
 
       const finalTitle = scriptTitle.trim() || `Roteiro ${(videoScripts?.length ?? 0) + 1}`;
-      const payload = {
+      const payload: Record<string, unknown> = {
         title: finalTitle,
         spoken_text: spoken,
         editing_instructions: scriptInstructions?.trim() || null,
@@ -364,6 +399,9 @@ export default function PlanningDetail() {
         scenes,
         post_id: scriptPostId || null,
       };
+      if (complete) {
+        payload.completed_at = new Date().toISOString();
+      }
 
       if (editingScriptId) {
         const { error } = await supabase.from("video_scripts")
@@ -377,10 +415,14 @@ export default function PlanningDetail() {
         if (error) throw error;
       }
     },
-    onSuccess: () => {
+    onSuccess: (_, { complete }) => {
       queryClient.invalidateQueries({ queryKey: ["video-scripts", planningId] });
+      queryClient.invalidateQueries({ queryKey: ["production-items"] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
       resetScriptForm();
-      toast.success(editingScriptId ? "Roteiro atualizado com sucesso!" : "Roteiro salvo com sucesso!");
+      toast.success(complete
+        ? "Roteiro concluído e Produção atualizada!"
+        : editingScriptId ? "Rascunho atualizado!" : "Rascunho salvo!");
     },
     onError: (e: any) => {
       const errorMsg = e.message || "Erro ao salvar roteiro. Tente novamente.";
@@ -920,7 +962,11 @@ export default function PlanningDetail() {
               variant="outline"
               size="sm"
               disabled={!videoScripts?.length}
-              onClick={() => setLaudaOpen(true)}
+              onClick={() => {
+                setLaudaDraft(null);
+                setLaudaScriptId(null);
+                setLaudaOpen(true);
+              }}
             >
               <ScrollText className="mr-1 h-4 w-4" /> Ver lauda
             </Button>
@@ -954,7 +1000,7 @@ export default function PlanningDetail() {
                   </p>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  Ao salvar um roteiro com texto, a etapa Roteiro dessa peça é concluída automaticamente no quadro de Produção.
+                  Salvar mantém o roteiro como rascunho. Use “Concluir roteiro” quando o texto estiver pronto; o check será refletido na Produção e na tarefa vinculada.
                 </p>
               </div>
               <div className="space-y-2">
@@ -977,13 +1023,24 @@ export default function PlanningDetail() {
                 <Textarea value={scriptReferences} onChange={(e) => setScriptReferences(e.target.value)} placeholder="Ex: Referência do vídeo X, estilo similar ao canal Y, tom descontraído..." rows={3} />
               </div>
               <div className="space-y-2">
-                <Label>Instruções de edição</Label>
+                <Label>Orientações gerais de edição</Label>
                 <Textarea value={scriptInstructions} onChange={(e) => setScriptInstructions(e.target.value)} placeholder="Ex: Usar transições suaves, incluir b-roll de computador..." rows={3} />
+                <p className="text-xs text-muted-foreground">
+                  Use este campo para regras do vídeo inteiro. Cortes e visuais específicos devem ficar na coluna Edição de cada bloco.
+                </p>
               </div>
-              <div className="flex gap-2">
-                <Button size="sm" onClick={() => saveScript.mutate()} disabled={saveScript.isPending}>
-                  {saveScript.isPending ? "Salvando..." : editingScriptId ? "Atualizar Roteiro" : "Salvar Roteiro"}
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={openDraftLauda} disabled={saveScript.isPending}>
+                  <ScrollText className="mr-1.5 h-4 w-4" /> Pré-visualizar lauda
                 </Button>
+                <Button size="sm" variant="outline" onClick={() => saveScript.mutate({ complete: false })} disabled={saveScript.isPending}>
+                  {saveScript.isPending ? "Salvando..." : editingScriptId ? "Atualizar rascunho" : "Salvar rascunho"}
+                </Button>
+                {!scriptCompletedAt && (
+                  <Button size="sm" onClick={() => saveScript.mutate({ complete: true })} disabled={saveScript.isPending}>
+                    <Check className="mr-1.5 h-4 w-4" /> Concluir roteiro
+                  </Button>
+                )}
                 <Button variant="ghost" size="sm" onClick={resetScriptForm}>Cancelar</Button>
               </div>
             </CardContent>
@@ -999,8 +1056,21 @@ export default function PlanningDetail() {
                     <div className="flex items-center gap-2">
                       <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">{i + 1}</span>
                       <h4 className="font-semibold text-sm">{script.title || `Roteiro ${i + 1}`}</h4>
+                      <span className={script.completed_at
+                        ? "rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-600"
+                        : "rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"}>
+                        {script.completed_at ? "Concluído" : "Rascunho"}
+                      </span>
                     </div>
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
+                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={(e) => {
+                        e.stopPropagation();
+                        setLaudaDraft(null);
+                        setLaudaScriptId(script.id);
+                        setLaudaOpen(true);
+                      }} title="Ver lauda deste roteiro" aria-label="Ver lauda deste roteiro">
+                        <ScrollText className="h-3.5 w-3.5" />
+                      </Button>
                       <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={(e) => {
                         e.stopPropagation();
                         void copySingleScriptSpokenText(script);
@@ -1046,7 +1116,11 @@ export default function PlanningDetail() {
         clientName={client?.name || "Cliente não informado"}
         planningName="Planejamento mensal"
         monthYear={`${MONTHS[planning.month - 1]} de ${planning.year}`}
-        scripts={videoScripts || []}
+        scripts={laudaDraft
+          ? [laudaDraft]
+          : laudaScriptId
+            ? (videoScripts || []).filter((script) => script.id === laudaScriptId)
+            : videoScripts || []}
       />
 
       {/* Sugestões de roteiro enviadas pelo cliente (portal público) */}

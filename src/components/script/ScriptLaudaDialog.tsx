@@ -93,7 +93,7 @@ export function ScriptLaudaDialog({
                 onClick={handlePrint}
               >
                 <Printer className="mr-2 h-4 w-4" />
-                Baixar roteiro
+                Imprimir / salvar PDF
               </Button>
               <Button
                 type="button"

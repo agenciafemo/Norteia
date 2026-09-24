@@ -38,6 +38,7 @@ import {
 } from "@/hooks/usePostEditorDraft";
 import { ScriptLaudaDialog } from "@/components/script/ScriptLaudaDialog";
 import { SceneEditor } from "@/components/script/SceneEditor";
+import { PlanningDocsWorkspace } from "@/components/planning/PlanningDocsWorkspace";
 import { emptyScene, parseScenes, scenesSpokenText, serializeScenes, type Scene } from "@/lib/scriptScenes";
 import {
   copyScriptSpokenText,
@@ -832,6 +833,16 @@ export default function PlanningDetail() {
           </DropdownMenu>
         </div>
       </div>
+
+      {organizationId && planning.client_id && (
+        <PlanningDocsWorkspace
+          organizationId={organizationId}
+          planningId={planningId!}
+          clientId={planning.client_id}
+          clientName={client?.name || "Cliente"}
+          posts={posts ?? []}
+        />
+      )}
 
       {/* Feed Grid */}
       {feedPosts.length > 0 && (

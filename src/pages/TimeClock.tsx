@@ -57,7 +57,7 @@ import {
   ajusteCorrigeBatida,
   atrasou,
   batidaAposEntradaEsquecida,
-  classificarBatida,
+  classificarBatidaDoBotao,
   contarDia,
   diasDoMes,
   direcaoNoHorario,
@@ -819,6 +819,13 @@ export default function TimeClock() {
   // Memorizado porque entra em useMemo mais abaixo: `?? []` cria um array novo
   // a cada render e refaria a conta sem necessidade.
   const punches = useMemo(() => punchesQuery.data ?? [], [punchesQuery.data]);
+  // Pedido de ajuste ainda não aprovado não é batida oficial. A distinção é
+  // importante quando a pessoa chega depois do meio-dia: ela ainda precisa
+  // poder dizer "estou chegando agora", mesmo que exista uma entrada antiga
+  // aguardando a ADM.
+  const situacaoOficialDeHoje = situacaoDoDia(
+    punches.map((punch) => ({ kind: punch.kind })),
+  );
   // Ajustes de hoje ainda em análise entram na sequência pelo horário pedido,
   // igual ao servidor (prepare_time_clock_punch). Sem isso o botão pediria de
   // novo uma batida que já está aguardando aprovação.
@@ -847,7 +854,7 @@ export default function TimeClock() {
   // Sem entrada e já passou das 10h: pode ser chegada tarde ou entrada
   // esquecida. O botão não promete "entrada" — a pergunta vem no clique.
   const semEntradaDepoisDaJanela = perguntarPelaEntrada(
-    situacaoDeHoje,
+    situacaoOficialDeHoje,
     agencySecondOfDay(new Date().toISOString()),
   );
   const acaoDoBotao = situacaoDeHoje.encerrado
@@ -1312,22 +1319,22 @@ export default function TimeClock() {
    * para o médico gravava almoço sem querer.
    */
   const baterPonto = useMutation({
-    // entradaEsquecida = "HH:mm" quando a pessoa diz que chegou antes e não
-    // bateu. A entrada vai como pedido de ajuste ANTES da batida: o servidor
-    // conta ajuste pendente na sequência, então a batida de agora já é saída.
-    mutationFn: async (entradaEsquecida?: string) => {
+    // entradaEsquecida leva o horário retroativo para aprovação; chegadaAgora
+    // informa explicitamente que a primeira batida oficial deve ser entrada.
+    mutationFn: async (opcao?: { entradaEsquecida?: string; chegadaAgora?: boolean }) => {
       if (!user || !organizationId) throw new Error("Organização ou usuário indisponível.");
 
       const agora = new Date();
       const segundoAgora = agencySecondOfDay(agora.toISOString());
-      let sugestao = classificarBatida(
+      let sugestao = classificarBatidaDoBotao(
         situacaoDeHoje,
         segundoAgora,
         punches.some((punch) => punch.kind === "saida_almoco"),
+        opcao?.chegadaAgora,
       );
 
-      if (entradaEsquecida) {
-        const entradaEm = new Date(`${todayKey}T${entradaEsquecida}:00-03:00`);
+      if (opcao?.entradaEsquecida) {
+        const entradaEm = new Date(`${todayKey}T${opcao.entradaEsquecida}:00-03:00`);
         if (Number.isNaN(entradaEm.getTime()) || entradaEm.getTime() >= agora.getTime()) {
           throw new Error("Informe um horário de chegada anterior a agora.");
         }
@@ -1762,7 +1769,7 @@ export default function TimeClock() {
               }
               onClick={() => {
                 // Confere na hora do clique, não no último render.
-                if (perguntarPelaEntrada(situacaoDeHoje, agencySecondOfDay(new Date().toISOString()))) {
+                if (perguntarPelaEntrada(situacaoOficialDeHoje, agencySecondOfDay(new Date().toISOString()))) {
                   setEntradaEsquecidaHora("08:30");
                   setEntradaEsquecidaOpen(true);
                   return;
@@ -2991,7 +2998,7 @@ export default function TimeClock() {
                   className="space-y-3 rounded-xl border border-border/60 p-3"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    baterPonto.mutate(entradaEsquecidaHora);
+                    baterPonto.mutate({ entradaEsquecida: entradaEsquecidaHora });
                   }}
                 >
                   <div>
@@ -3013,7 +3020,9 @@ export default function TimeClock() {
                       />
                     </div>
                     <Button type="submit" className="flex-1" disabled={baterPonto.isPending || !entradaEsquecidaHora}>
-                      {baterPonto.isPending && baterPonto.variables ? "Registrando..." : `Registrar ${vira.toLowerCase()}`}
+                      {baterPonto.isPending && baterPonto.variables?.entradaEsquecida
+                        ? "Registrando..."
+                        : `Registrar ${vira.toLowerCase()}`}
                     </Button>
                   </div>
                 </form>
@@ -3022,9 +3031,11 @@ export default function TimeClock() {
                   variant="outline"
                   className="w-full"
                   disabled={baterPonto.isPending}
-                  onClick={() => baterPonto.mutate(undefined)}
+                  onClick={() => baterPonto.mutate({ chegadaAgora: true })}
                 >
-                  {baterPonto.isPending && !baterPonto.variables ? "Registrando..." : "Estou chegando agora"}
+                  {baterPonto.isPending && baterPonto.variables?.chegadaAgora
+                    ? "Registrando..."
+                    : "Estou chegando agora"}
                 </Button>
               </div>
             );

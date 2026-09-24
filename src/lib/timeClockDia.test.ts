@@ -4,6 +4,7 @@ import {
   atrasou,
   batidaAposEntradaEsquecida,
   classificarBatida,
+  classificarBatidaDoBotao,
   contarDia,
   diasDoMes,
   direcaoNoHorario,
@@ -206,6 +207,9 @@ describe("um botão só: o horário diz o que é a batida", () => {
   it("primeira batida do dia é entrada, a qualquer hora", () => {
     expect(classificarBatida(estadoDoDia([]), hora(7, 10), false)).toBe("entrada");
     expect(classificarBatida(estadoDoDia([]), hora(11, 0), false)).toBe("entrada");
+    expect(classificarBatida(estadoDoDia([]), hora(12, 1), false)).toBe("entrada");
+    expect(classificarBatida(estadoDoDia([]), hora(14, 34), false)).toBe("entrada");
+    expect(classificarBatida(estadoDoDia([]), hora(23, 0), false)).toBe("entrada");
   });
 
   it("sair 09:00 é saída no meio do dia, não almoço", () => {
@@ -240,6 +244,22 @@ describe("um botão só: o horário diz o que é a batida", () => {
 });
 
 describe("esqueceu a entrada: a tela pergunta antes de gravar", () => {
+  it("'estou chegando agora' vence uma entrada retroativa ainda pendente", () => {
+    const estadoComAjustePendente = estadoDoDia(["entrada"]);
+    expect(classificarBatidaDoBotao(
+      estadoComAjustePendente,
+      hora(13, 1),
+      false,
+      true,
+    )).toBe("entrada");
+    expect(classificarBatidaDoBotao(
+      estadoComAjustePendente,
+      hora(13, 1),
+      false,
+      false,
+    )).toBe("saida_almoco");
+  });
+
   it("sem entrada até as 10h, bate entrada direto", () => {
     expect(perguntarPelaEntrada(estadoDoDia([]), hora(8, 40))).toBe(false);
     expect(perguntarPelaEntrada(estadoDoDia([]), hora(10, 0))).toBe(false);

@@ -23,6 +23,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { VincularPlanejamentoDialog } from "@/components/producao/VincularPlanejamentoDialog";
 import { postStatusBadge, postStatusLabel } from "@/lib/postStatus";
 import { postThumbnailUrl } from "@/lib/postThumbnail";
+import { groupProductionByPlanning } from "@/lib/productionPlanningGroups";
 import { cn } from "@/lib/utils";
 import {
   enviarPecaParaKanban,
@@ -281,11 +282,21 @@ export default function Producao() {
     [activeClient, items],
   );
 
-  const groups = useMemo(() => {
-    return GROUP_ORDER
-      .map((ct) => ({ ct, pieces: clientItems.filter((i) => i.content_type === ct) }))
-      .filter((g) => g.pieces.length > 0);
-  }, [clientItems]);
+  const planningGroups = useMemo(
+    () => groupProductionByPlanning(
+      clientItems,
+      plannings.filter((planning) => planning.client_id === activeClient),
+    ).map((planningGroup) => ({
+      ...planningGroup,
+      contentGroups: GROUP_ORDER
+        .map((ct) => ({
+          ct,
+          pieces: planningGroup.pieces.filter((item) => item.content_type === ct),
+        }))
+        .filter((group) => group.pieces.length > 0),
+    })),
+    [activeClient, clientItems, plannings],
+  );
 
   // ---- Marcar / desmarcar etapa ----
   const toggleStep = useMutation({
@@ -670,7 +681,7 @@ export default function Producao() {
           <div className="space-y-3">
             {[1, 2, 3].map((i) => <Skeleton key={i} className="h-24 rounded-xl" />)}
           </div>
-        ) : groups.length === 0 ? (
+        ) : planningGroups.length === 0 ? (
           <div className="rounded-2xl border border-border/70 bg-card/50 px-6 py-14 text-center">
             <Workflow className="mx-auto h-7 w-7 text-muted-foreground/60" />
             <p className="mt-2 text-sm font-medium">Nenhuma peça em produção</p>
@@ -680,32 +691,77 @@ export default function Producao() {
           </div>
         ) : (
           <div className="space-y-3">
-            {groups.map((group) => {
-              const isOpen = !collapsed[group.ct];
-              const allSteps = group.pieces.flatMap((p) => p.production_item_steps ?? []);
-              const gp = pieceProgress(allSteps);
+            {planningGroups.map((planningGroup) => {
+              const planningKey = `planning:${planningGroup.key}`;
+              const planningOpen = !collapsed[planningKey];
+              const planningProgress = pieceProgress(
+                planningGroup.pieces.flatMap((piece) => piece.production_item_steps ?? []),
+              );
+              const href = planningHref(planningGroup.pieces[0]);
               return (
-                <div key={group.ct} className="overflow-hidden rounded-2xl border border-border/70 bg-card/60">
-                  {/* Cabeçalho do grupo: "Reels (8)" com expandir */}
-                  <button
-                    onClick={() => setCollapsed((c) => ({ ...c, [group.ct]: isOpen }))}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
-                  >
-                    {isOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                            : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                    <span className="font-semibold">{PIECE_LABEL[group.ct] ?? group.ct}</span>
-                    <span className="rounded-full bg-brand-soft px-2 py-0.5 text-xs font-bold text-brand">
-                      {group.pieces.length}
-                    </span>
-                    <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
-                      <span className="tabular-nums">{gp.pct}%</span>
-                      <span className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
-                        <span className="block h-full rounded-full bg-brand" style={{ width: `${gp.pct}%` }} />
+                <section key={planningGroup.key} className="overflow-hidden rounded-2xl border border-border/70 bg-card/40">
+                  <div className="flex items-center gap-2 border-b border-border/60 bg-card/80 px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => setCollapsed((current) => ({ ...current, [planningKey]: planningOpen }))}
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                    >
+                      {planningOpen
+                        ? <ChevronDown className="h-4 w-4 shrink-0 text-brand" />
+                        : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">{planningGroup.label}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {planningGroup.pieces.length} {planningGroup.pieces.length === 1 ? "peça" : "peças"} no planejamento
+                        </p>
+                      </div>
+                      <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+                        <span className="tabular-nums">{planningProgress.pct}%</span>
+                        <span className="h-1.5 w-24 overflow-hidden rounded-full bg-muted">
+                          <span className="block h-full rounded-full bg-brand" style={{ width: `${planningProgress.pct}%` }} />
+                        </span>
                       </span>
-                    </span>
-                  </button>
+                    </button>
+                    {href && (
+                      <Link
+                        to={href}
+                        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border/70 px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:border-brand/50 hover:text-brand"
+                      >
+                        <ExternalLink className="h-3 w-3" /> Abrir planejamento
+                      </Link>
+                    )}
+                  </div>
 
-                  {isOpen && (
+                  {planningOpen && (
+                    <div className="space-y-2 p-2.5">
+                    {planningGroup.contentGroups.map((group) => {
+                      const groupKey = `${planningGroup.key}:${group.ct}`;
+                      const isOpen = !collapsed[groupKey];
+                      const allSteps = group.pieces.flatMap((p) => p.production_item_steps ?? []);
+                      const gp = pieceProgress(allSteps);
+                      return (
+                      <div key={groupKey} className="overflow-hidden rounded-xl border border-border/60 bg-background/50">
+                        {/* Tipos ficam dentro do planejamento, sem misturar meses. */}
+                        <button
+                          type="button"
+                          onClick={() => setCollapsed((current) => ({ ...current, [groupKey]: isOpen }))}
+                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
+                        >
+                          {isOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                  : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                          <span className="text-sm font-semibold">{PIECE_LABEL[group.ct] ?? group.ct}</span>
+                          <span className="rounded-full bg-brand-soft px-2 py-0.5 text-xs font-bold text-brand">
+                            {group.pieces.length}
+                          </span>
+                          <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+                            <span className="tabular-nums">{gp.pct}%</span>
+                            <span className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
+                              <span className="block h-full rounded-full bg-brand" style={{ width: `${gp.pct}%` }} />
+                            </span>
+                          </span>
+                        </button>
+
+                    {isOpen && (
                     <div className="divide-y divide-border/60 border-t border-border/60">
                       {group.pieces.map((piece) => {
                         const steps = [...(piece.production_item_steps ?? [])].sort((a, b) => a.position - b.position);
@@ -719,7 +775,7 @@ export default function Producao() {
                               {/* Peça antiga pode não ter mês: some em vez de
                                   mostrar um traço, que sujaria toda a lista
                                   enquanto o campo não estiver preenchido. */}
-                              {rotuloDoMes(piece.mes_referencia) && (
+                              {!piece.planning_id && rotuloDoMes(piece.mes_referencia) && (
                                 <span className="rounded-md border border-border/70 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                                   {rotuloDoMes(piece.mes_referencia)}
                                 </span>
@@ -766,7 +822,7 @@ export default function Producao() {
                                   <Link2 className="h-3 w-3" /> Vincular ao planejamento
                                 </button>
                               )}
-                              {planningHref(piece) && (
+                              {!planningGroup.planning && planningHref(piece) && (
                                 <Link
                                   to={planningHref(piece)!}
                                   className="inline-flex items-center gap-1 rounded-lg border border-border/70 px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:border-brand/50 hover:text-brand"
@@ -955,8 +1011,13 @@ export default function Producao() {
                         );
                       })}
                     </div>
+                    )}
+                      </div>
+                      );
+                    })}
+                    </div>
                   )}
-                </div>
+                </section>
               );
             })}
           </div>

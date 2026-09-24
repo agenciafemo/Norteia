@@ -3859,6 +3859,8 @@ export type Database = {
       }
       video_scripts: {
         Row: {
+          completed_at: string | null
+          completed_by: string | null
           created_at: string | null
           editing_instructions: string | null
           id: string
@@ -3873,6 +3875,8 @@ export type Database = {
           updated_at: string | null
         }
         Insert: {
+          completed_at?: string | null
+          completed_by?: string | null
           created_at?: string | null
           editing_instructions?: string | null
           id?: string
@@ -3887,6 +3891,8 @@ export type Database = {
           updated_at?: string | null
         }
         Update: {
+          completed_at?: string | null
+          completed_by?: string | null
           created_at?: string | null
           editing_instructions?: string | null
           id?: string

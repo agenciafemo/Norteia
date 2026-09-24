@@ -8,9 +8,11 @@ type AnyClient = any;
 
 /** Etapa da peça, como ela vem do quadro de produção. */
 export interface EtapaDaPeca {
+  id: string;
   label: string;
   position: number;
   done: boolean;
+  assigneeId: string | null;
 }
 
 export interface EnviarParaKanbanInput {
@@ -54,9 +56,9 @@ export class PecaJaNoKanbanError extends Error {
  * Manda uma peça do quadro de Produção para o Kanban: cria a tarefa-mãe e uma
  * subtarefa por etapa da peça (roteiro, captação, edição, aprovação...).
  *
- * As duas listas continuam existindo em paralelo por desenho: o quadro de
- * produção é da equipe que executa, o Kanban é de quem acompanha. O vínculo
- * `task_id` serve para não criar tarefa repetida, não para sincronizar as duas.
+ * As duas listas continuam existindo, cada uma com sua finalidade, mas cada
+ * subtarefa guarda a etapa que representa. Assim, o check rapido no Kanban e
+ * o check da Producao sao a mesma conclusao, nao dois controles concorrentes.
  */
 export async function enviarPecaParaKanban(
   input: EnviarParaKanbanInput,
@@ -91,8 +93,34 @@ export async function enviarPecaParaKanban(
   if (taskError) throw new Error(taskError.message);
   if (!task?.id) throw new Error("Não foi possível criar a tarefa.");
 
-  // Cada etapa vira uma subtarefa, preservando a ordem e o que já foi feito —
-  // uma peça enviada no meio do caminho chega ao Kanban com o avanço real.
+  // Reserva a peca para esta tarefa antes de criar as subtarefas. Alem de ser
+  // necessario para validar o vinculo de cada etapa, o filtro por NULL fecha a
+  // corrida de duas pessoas clicando em "Enviar" ao mesmo tempo.
+  const { data: marcada, error: linkError } = await db
+    .from("production_items")
+    .update({ task_id: task.id })
+    .eq("id", input.itemId)
+    .is("task_id", null)
+    .select("id");
+  if (linkError) {
+    await db.from("tasks").delete().eq("id", task.id);
+    throw new Error(linkError.message);
+  }
+  if (!marcada || marcada.length === 0) {
+    await db.from("tasks").delete().eq("id", task.id);
+    const concorrente = await db
+      .from("production_items")
+      .select("task_id")
+      .eq("id", input.itemId)
+      .maybeSingle();
+    if (concorrente.data?.task_id) {
+      throw new PecaJaNoKanbanError(concorrente.data.task_id);
+    }
+    throw new Error("Não foi possível vincular a peça à tarefa.");
+  }
+
+  // Cada etapa vira uma subtarefa, preservando ordem, responsavel e estado —
+  // uma peca enviada no meio do caminho chega ao Kanban com o avanco real.
   const subtarefas = [...input.etapas]
     .sort((a, b) => a.position - b.position)
     .map((etapa, index) => ({
@@ -100,6 +128,8 @@ export async function enviarPecaParaKanban(
       title: etapa.label,
       done: etapa.done,
       position: index,
+      assignee_id: etapa.assigneeId,
+      production_step_id: etapa.id,
     }));
 
   if (subtarefas.length > 0) {
@@ -107,28 +137,14 @@ export async function enviarPecaParaKanban(
     // A tarefa sem as subtarefas seria pior que nada: some o motivo de existir,
     // e a peça ficaria marcada como enviada. Desfaz e deixa tentar de novo.
     if (subError) {
+      await db
+        .from("production_items")
+        .update({ task_id: null })
+        .eq("id", input.itemId)
+        .eq("task_id", task.id);
       await db.from("tasks").delete().eq("id", task.id);
       throw new Error(subError.message);
     }
-  }
-
-  // Só agora marca a peça. Se este UPDATE falhar, a tarefa existe e a peça
-  // continua "não enviada" — o pior caso é uma tarefa duplicada num próximo
-  // clique, não conteúdo perdido.
-  //
-  // O .select() não é decoração: UPDATE barrado por RLS devolve zero linhas
-  // SEM erro neste projeto, e isso já causou perda silenciosa antes.
-  const { data: marcada, error: linkError } = await db
-    .from("production_items")
-    .update({ task_id: task.id })
-    .eq("id", input.itemId)
-    .select("id");
-  if (linkError) throw new Error(linkError.message);
-  if (!marcada || marcada.length === 0) {
-    throw new Error(
-      "A tarefa foi criada, mas não consegui marcar a peça como enviada. " +
-        "Confira suas permissões antes de enviar de novo.",
-    );
   }
 
   return task.id as string;

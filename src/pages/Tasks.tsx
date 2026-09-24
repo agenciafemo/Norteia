@@ -27,6 +27,7 @@ import { ptBR } from "date-fns/locale";
 import {
   AlertCircle,
   CalendarDays,
+  Check,
   Clock3,
   Filter,
   GripVertical,
@@ -129,6 +130,7 @@ type TaskSubtask = {
   assignee_id: string | null;
   due_date: string | null;
   done_at: string | null;
+  production_step_id: string | null;
 };
 
 type TaskTimeEntry = {
@@ -310,8 +312,12 @@ function TaskCardContent({
   activeTimerTaskId,
   nowMs = Date.now(),
   timerPending = false,
+  subtaskPendingId,
+  canEditAll = false,
   onToggleTimer,
   onAddTime,
+  onToggleSubtask,
+  onCompleteTask,
   dragging = false,
   dragHandle,
   onEdit,
@@ -325,8 +331,12 @@ function TaskCardContent({
   activeTimerTaskId?: string;
   nowMs?: number;
   timerPending?: boolean;
+  subtaskPendingId?: string | null;
+  canEditAll?: boolean;
   onToggleTimer?: (taskId: string) => void;
   onAddTime?: (taskId: string) => void;
+  onToggleSubtask?: (subtask: TaskSubtask, done: boolean) => void;
+  onCompleteTask?: (task: TaskRecord) => void;
   dragging?: boolean;
   dragHandle?: ReactNode;
   onEdit?: () => void;
@@ -334,6 +344,10 @@ function TaskCardContent({
   const overdue = task.status !== "done" && isBefore(parseISO(task.due_date), startOfDay(new Date()));
   const priority = PRIORITIES[task.priority];
   const completedSubtasks = subtasks.filter((subtask) => subtask.done).length;
+  const canCompleteTask = task.status !== "done"
+    && (subtasks.length === 0 || completedSubtasks === subtasks.length)
+    && (canEditAll || task.assignee_id === currentUserId)
+    && !!onCompleteTask;
   // Etapa vencida dentro de uma peça que ainda está no prazo: o prazo da
   // tarefa-mãe só estoura no fim, então sem este aviso o atraso da arte só
   // aparece quando já é tarde para a legenda e a edição que dependem dela.
@@ -371,6 +385,23 @@ function TaskCardContent({
           <GripVertical className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/50" aria-hidden="true" />
         )}
         <p className="min-w-0 flex-1 text-sm font-semibold leading-5 text-card-foreground">{task.title}</p>
+        {canCompleteTask && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 shrink-0 rounded-full p-0 text-muted-foreground hover:bg-emerald-500/10 hover:text-emerald-600"
+            title="Concluir tarefa"
+            aria-label={`Concluir tarefa ${task.title}`}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onCompleteTask(task);
+            }}
+          >
+            <Check className="h-4 w-4" />
+          </Button>
+        )}
         {onEdit && (
           <span className="mt-0.5 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground" aria-hidden="true">
             <Pencil className="h-3.5 w-3.5" />
@@ -386,6 +417,58 @@ function TaskCardContent({
           {priority.label}
         </Badge>
       </div>
+
+      {subtasks.length > 0 && (
+        <div className="mt-3 space-y-1.5 rounded-xl border border-border/60 bg-muted/25 p-2.5">
+          <div className="flex items-center justify-between px-0.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Etapas
+            </span>
+            <span className="text-[10px] font-medium text-muted-foreground">
+              {completedSubtasks}/{subtasks.length}
+            </span>
+          </div>
+          {subtasks.map((subtask) => {
+            const canToggle = !!onToggleSubtask && (
+              canEditAll
+              || subtask.assignee_id === currentUserId
+              || (!subtask.assignee_id && task.assignee_id === currentUserId)
+            );
+            const pending = subtaskPendingId === subtask.id;
+            return (
+              <label
+                key={subtask.id}
+                className={cn(
+                  "flex min-h-8 items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors",
+                  canToggle ? "cursor-pointer hover:bg-background/80" : "cursor-default",
+                  subtask.done && "text-muted-foreground",
+                )}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <Checkbox
+                  checked={subtask.done}
+                  disabled={!canToggle || pending}
+                  aria-label={`${subtask.done ? "Reabrir" : "Concluir"} etapa ${subtask.title}`}
+                  onCheckedChange={(checked) => {
+                    if (typeof checked === "boolean" && canToggle) {
+                      onToggleSubtask(subtask, checked);
+                    }
+                  }}
+                />
+                <span className={cn("min-w-0 flex-1", subtask.done && "line-through")}>
+                  {subtask.title}
+                </span>
+                {subtask.production_step_id && (
+                  <span className="shrink-0 text-[9px] font-medium uppercase tracking-wide text-primary/70">
+                    Produção
+                  </span>
+                )}
+              </label>
+            );
+          })}
+        </div>
+      )}
 
       {(timeEntries.length > 0 || onToggleTimer || onAddTime) && (
         <div className="mt-3 flex items-center justify-between gap-2 rounded-xl bg-muted/45 px-2.5 py-2">
@@ -488,8 +571,12 @@ function SortableTaskCard({
   activeTimerTaskId,
   nowMs,
   timerPending,
+  subtaskPendingId,
+  canEditAll,
   onToggleTimer,
   onAddTime,
+  onToggleSubtask,
+  onCompleteTask,
   disabled,
   onEdit,
 }: {
@@ -502,8 +589,12 @@ function SortableTaskCard({
   activeTimerTaskId?: string;
   nowMs: number;
   timerPending: boolean;
+  subtaskPendingId?: string | null;
+  canEditAll: boolean;
   onToggleTimer?: (taskId: string) => void;
   onAddTime?: (taskId: string) => void;
+  onToggleSubtask?: (subtask: TaskSubtask, done: boolean) => void;
+  onCompleteTask?: (task: TaskRecord) => void;
   disabled: boolean;
   onEdit?: (task: TaskRecord) => void;
 }) {
@@ -529,8 +620,12 @@ function SortableTaskCard({
         activeTimerTaskId={activeTimerTaskId}
         nowMs={nowMs}
         timerPending={timerPending}
+        subtaskPendingId={subtaskPendingId}
+        canEditAll={canEditAll}
         onToggleTimer={onToggleTimer}
-              onAddTime={onAddTime}
+        onAddTime={onAddTime}
+        onToggleSubtask={onToggleSubtask}
+        onCompleteTask={onCompleteTask}
         onEdit={onEdit ? () => onEdit(task) : undefined}
         dragHandle={
           disabled ? (
@@ -564,8 +659,12 @@ function TaskColumn({
   activeTimerTaskId,
   nowMs,
   timerPending,
+  subtaskPendingId,
+  canEditAll,
   onToggleTimer,
   onAddTime,
+  onToggleSubtask,
+  onCompleteTask,
   draggingDisabled,
   onEdit,
   hasActiveFilters,
@@ -582,8 +681,12 @@ function TaskColumn({
   activeTimerTaskId?: string;
   nowMs: number;
   timerPending: boolean;
+  subtaskPendingId?: string | null;
+  canEditAll: boolean;
   onToggleTimer?: (taskId: string) => void;
   onAddTime?: (taskId: string) => void;
+  onToggleSubtask?: (subtask: TaskSubtask, done: boolean) => void;
+  onCompleteTask?: (task: TaskRecord) => void;
   draggingDisabled: boolean;
   onEdit?: (task: TaskRecord) => void;
   hasActiveFilters: boolean;
@@ -628,8 +731,12 @@ function TaskColumn({
               activeTimerTaskId={activeTimerTaskId}
               nowMs={nowMs}
               timerPending={timerPending}
+              subtaskPendingId={subtaskPendingId}
+              canEditAll={canEditAll}
               onToggleTimer={onToggleTimer}
               onAddTime={onAddTime}
+              onToggleSubtask={onToggleSubtask}
+              onCompleteTask={onCompleteTask}
               disabled={draggingDisabled}
               onEdit={onEdit}
             />
@@ -1062,7 +1169,12 @@ export default function Tasks() {
   });
 
   const toggleSubtask = useMutation({
-    mutationFn: async ({ id, taskId, done }: { id: string; taskId: string; done: boolean }) => {
+    mutationFn: async ({ id, taskId, done }: {
+      id: string;
+      taskId: string;
+      done: boolean;
+      productionStepId?: string | null;
+    }) => {
       exigirLinhaEscrita(
         await taskSupabase
           .from<LinhasAfetadas>("task_subtasks")
@@ -1075,7 +1187,16 @@ export default function Tasks() {
         "Sem permissão para alterar esta subtarefa.",
       );
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tasks-board", organizationId] }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["tasks-board", organizationId] });
+      if (variables.productionStepId) {
+        queryClient.invalidateQueries({ queryKey: ["production-items", organizationId] });
+        queryClient.invalidateQueries({ queryKey: ["control-dashboard", organizationId] });
+        toast.success(variables.done
+          ? "Etapa concluída também na Produção"
+          : "Etapa reaberta também na Produção");
+      }
+    },
     onError: (error) => toast.error(error instanceof Error ? error.message : "Não foi possível atualizar a subtarefa"),
   });
 
@@ -1173,6 +1294,31 @@ export default function Tasks() {
       }
       toast.error(error instanceof Error ? error.message : "Não foi possível atualizar o timer");
     },
+  });
+
+  const completeTask = useMutation({
+    mutationFn: async (task: TaskRecord) => {
+      const { error } = await taskSupabase.rpc<null>("complete_assigned_task", {
+        _task_id: task.id,
+      });
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: (_data, task) => {
+      queryClient.invalidateQueries({ queryKey: ["tasks-board", organizationId] });
+      toast.success("Tarefa concluída");
+
+      if (activeUserTimer?.task_id === task.id) {
+        toggleTimer.mutate(task.id);
+      } else if (!(timeEntriesByTaskId.get(task.id) ?? []).length) {
+        setTempoDialog({
+          task: { id: task.id, title: task.title },
+          motivo: "concluida_sem_tempo",
+        });
+      }
+    },
+    onError: (error) => toast.error(
+      error instanceof Error ? error.message : "Não foi possível concluir a tarefa",
+    ),
   });
 
   const preferredAssigneeId = () => {
@@ -1543,6 +1689,7 @@ export default function Tasks() {
                                   id: subtask.id,
                                   taskId: editingTask.id,
                                   done: checked === true,
+                                  productionStepId: subtask.production_step_id,
                                 })}
                               />
                               <label
@@ -1901,11 +2048,22 @@ export default function Tasks() {
                   activeTimerTaskId={activeUserTimer?.task_id}
                   nowMs={nowMs}
                   timerPending={toggleTimer.isPending}
+                  subtaskPendingId={toggleSubtask.isPending ? toggleSubtask.variables?.id : null}
+                  canEditAll={canEditContent}
                   onToggleTimer={canEditContent ? (taskId) => toggleTimer.mutate(taskId) : undefined}
                   onAddTime={canEditContent ? (taskId) => {
                     const alvo = localTasks.find((task) => task.id === taskId);
                     if (alvo) setTempoDialog({ task: { id: alvo.id, title: alvo.title }, motivo: "adicionar" });
                   } : undefined}
+                  onToggleSubtask={(subtask, done) => toggleSubtask.mutate({
+                    id: subtask.id,
+                    taskId: subtask.task_id,
+                    done,
+                    productionStepId: subtask.production_step_id,
+                  })}
+                  onCompleteTask={user && !completeTask.isPending
+                    ? (task) => completeTask.mutate(task)
+                    : undefined}
                   draggingDisabled={!canEditContent || moveTask.isPending}
                   onEdit={canEditContent ? openEditTask : undefined}
                   hasActiveFilters={hasActiveFilters}
@@ -1927,6 +2085,7 @@ export default function Tasks() {
                     currentUserId={user?.id}
                     activeTimerTaskId={activeUserTimer?.task_id}
                     nowMs={nowMs}
+                    canEditAll={canEditContent}
                     dragging
                   />
                 </div>

@@ -19,6 +19,33 @@ export type WhatsAppContact = {
   wa_id: string;
   profile_name: string | null;
   client_id: string | null;
+  conversation_status: ConversationStatus;
+  crm_stage: CrmStage;
+  priority: ConversationPriority;
+  assigned_to: string | null;
+  tags: string[];
+  next_follow_up_at: string | null;
+  last_message_at: string | null;
+  unread_count: number;
+};
+
+export type ConversationStatus = "novo" | "em_atendimento" | "aguardando_cliente" | "resolvido" | "arquivado";
+export type ConversationPriority = "baixa" | "normal" | "alta" | "urgente";
+export type CrmStage = "novo_contato" | "qualificacao" | "reuniao" | "proposta" | "cliente" | "perdido";
+
+export type TeamAssignee = {
+  user_id: string;
+  display_name: string;
+  job_title: string | null;
+  avatar_url: string | null;
+};
+
+export type WhatsAppContactNote = {
+  id: string;
+  contact_id: string;
+  author_id: string;
+  body: string;
+  created_at: string;
 };
 
 export type WhatsAppMessage = {
@@ -77,7 +104,7 @@ export async function loadWhatsAppSummaries(organizationId: string): Promise<Wha
 export async function loadWhatsAppMessages(organizationId: string): Promise<WhatsAppMessage[]> {
   const { data, error } = await (supabase as AnyClient)
     .from("whatsapp_messages")
-    .select("id, direction, message_type, body, sent_at, fora_do_horario, expires_at, summary_id, contact:whatsapp_contacts(id, wa_id, profile_name, client_id)")
+    .select("id, direction, message_type, body, sent_at, fora_do_horario, expires_at, summary_id, contact:whatsapp_contacts(id, wa_id, profile_name, client_id, conversation_status, crm_stage, priority, assigned_to, tags, next_follow_up_at, last_message_at, unread_count)")
     .eq("organization_id", organizationId)
     .order("sent_at", { ascending: false })
     .limit(500);
@@ -88,19 +115,69 @@ export async function loadWhatsAppMessages(organizationId: string): Promise<What
 export async function loadWhatsAppContacts(organizationId: string): Promise<WhatsAppContact[]> {
   const { data, error } = await (supabase as AnyClient)
     .from("whatsapp_contacts")
-    .select("id, wa_id, profile_name, client_id")
+    .select("id, wa_id, profile_name, client_id, conversation_status, crm_stage, priority, assigned_to, tags, next_follow_up_at, last_message_at, unread_count")
     .eq("organization_id", organizationId)
-    .order("created_at", { ascending: false });
+    .order("last_message_at", { ascending: false, nullsFirst: false });
   if (error) throw new Error(error.message);
   return (data ?? []) as WhatsAppContact[];
 }
 
-export async function linkContactToClient(contactId: string, clientId: string | null): Promise<void> {
+export async function loadWhatsAppAssignees(organizationId: string): Promise<TeamAssignee[]> {
+  const { data, error } = await (supabase as AnyClient).rpc("get_task_assignees", {
+    _organization_id: organizationId,
+  });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as TeamAssignee[];
+}
+
+export async function updateWhatsAppContact(
+  contactId: string,
+  patch: Partial<Pick<WhatsAppContact,
+    "client_id" | "conversation_status" | "crm_stage" | "priority" | "assigned_to" | "tags" | "next_follow_up_at"
+  >>,
+): Promise<void> {
   const { error } = await (supabase as AnyClient)
     .from("whatsapp_contacts")
-    .update({ client_id: clientId })
+    .update(patch)
     .eq("id", contactId);
   if (error) throw new Error(error.message);
+}
+
+export async function markWhatsAppConversationRead(contactId: string): Promise<void> {
+  const { error } = await (supabase as AnyClient).rpc("whatsapp_mark_conversation_read", {
+    _contact_id: contactId,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function loadWhatsAppContactNotes(contactId: string): Promise<WhatsAppContactNote[]> {
+  const { data, error } = await (supabase as AnyClient)
+    .from("whatsapp_contact_notes")
+    .select("id, contact_id, author_id, body, created_at")
+    .eq("contact_id", contactId)
+    .order("created_at", { ascending: false });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as WhatsAppContactNote[];
+}
+
+export async function addWhatsAppContactNote(
+  organizationId: string,
+  contactId: string,
+  body: string,
+): Promise<void> {
+  const { data: auth, error: authError } = await supabase.auth.getUser();
+  if (authError || !auth.user) throw new Error("Sessão inválida.");
+  const { error } = await (supabase as AnyClient).from("whatsapp_contact_notes").insert({
+    organization_id: organizationId,
+    contact_id: contactId,
+    author_id: auth.user.id,
+    body: body.trim(),
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function linkContactToClient(contactId: string, clientId: string | null): Promise<void> {
+  return updateWhatsAppContact(contactId, { client_id: clientId });
 }
 
 /** Resumos criados hoje (desde 0h no horário do navegador). */

@@ -1,9 +1,9 @@
-import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock3, Loader2, MessageCircle, Sparkles } from "lucide-react";
+import { Loader2, MessageCircle, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { EmptyState, StatusBadge } from "@/components/common";
+import { WhatsAppCRM } from "@/components/whatsapp/WhatsAppCRM";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -16,17 +16,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useOrganization } from "@/hooks/useOrganization";
 import { supabase } from "@/integrations/supabase/client";
 import {
-  diasParaApagar,
   formatarTelefone,
   gerarResumoAgora,
   linkContactToClient,
   loadWhatsAppConnection,
+  loadWhatsAppAssignees,
   loadWhatsAppContacts,
   loadWhatsAppMessages,
   loadWhatsAppSummaries,
-  textoContador,
   URGENCIA,
-  type WhatsAppMessage,
 } from "@/lib/whatsapp";
 
 const SEM_CLIENTE = "__sem_cliente__";
@@ -66,6 +64,11 @@ export default function WhatsApp() {
   const contatos = useQuery({
     queryKey: ["whatsapp-contacts", organizationId],
     queryFn: () => loadWhatsAppContacts(organizationId!),
+    enabled: !!organizationId && ativo,
+  });
+  const responsaveis = useQuery({
+    queryKey: ["whatsapp-assignees", organizationId],
+    queryFn: () => loadWhatsAppAssignees(organizationId!),
     enabled: !!organizationId && ativo,
   });
   const clientes = useQuery({
@@ -113,36 +116,21 @@ export default function WhatsApp() {
     onError: (e) => toast.error((e as Error).message),
   });
 
-  const nomeDoCliente = useMemo(
-    () => new Map((clientes.data ?? []).map((c) => [c.id, c.name])),
-    [clientes.data],
-  );
-
-  const conversas = useMemo(() => {
-    const grupos = new Map<string, WhatsAppMessage[]>();
-    for (const mensagem of mensagens.data ?? []) {
-      const chave = mensagem.contact?.id ?? "sem-contato";
-      grupos.set(chave, [...(grupos.get(chave) ?? []), mensagem]);
-    }
-    return [...grupos.values()];
-  }, [mensagens.data]);
-
   const pendentes = (mensagens.data ?? []).filter(
     (m) => m.fora_do_horario && !m.summary_id && m.direction === "recebida",
   ).length;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="mx-auto max-w-[1600px] space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
             <MessageCircle className="h-5 w-5 text-brand" />
-            <h1 className="text-2xl font-semibold tracking-tight">WhatsApp fora do horário</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">CRM e WhatsApp</h1>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            O que clientes mandam fora do atendimento (seg a sex, 8h30–17h30) vira resumo e tarefas às
-            8h30 do dia útil seguinte, para quem tem a função certa. O texto das mensagens é apagado em
-            30 dias; o resumo e as tarefas ficam.
+            Centralize o atendimento, distribua conversas, acompanhe o funil e transforme mensagens em
+            próximos passos. Fora do expediente, a IA continua resumindo demandas e criando tarefas.
           </p>
         </div>
         {ativo && podeEditar && (
@@ -179,12 +167,37 @@ export default function WhatsApp() {
             {conexao.data?.status === "paused" && <StatusBadge variant="neutral" size="sm">pausado</StatusBadge>}
           </div>
 
-          <Tabs defaultValue="resumos">
+          <Tabs defaultValue="atendimento">
             <TabsList>
+              <TabsTrigger value="atendimento">Atendimento</TabsTrigger>
+              <TabsTrigger value="funil">Funil CRM</TabsTrigger>
               <TabsTrigger value="resumos">Resumos</TabsTrigger>
-              <TabsTrigger value="mensagens">Mensagens</TabsTrigger>
               <TabsTrigger value="contatos">Contatos</TabsTrigger>
             </TabsList>
+
+            <TabsContent value="atendimento" className="mt-4">
+              <WhatsAppCRM
+                organizationId={organizationId!}
+                contacts={contatos.data ?? []}
+                messages={mensagens.data ?? []}
+                clients={clientes.data ?? []}
+                assignees={responsaveis.data ?? []}
+                canEdit={podeEditar}
+                mode="inbox"
+              />
+            </TabsContent>
+
+            <TabsContent value="funil" className="mt-4">
+              <WhatsAppCRM
+                organizationId={organizationId!}
+                contacts={contatos.data ?? []}
+                messages={mensagens.data ?? []}
+                clients={clientes.data ?? []}
+                assignees={responsaveis.data ?? []}
+                canEdit={podeEditar}
+                mode="pipeline"
+              />
+            </TabsContent>
 
             <TabsContent value="resumos" className="mt-4 space-y-3">
               {(resumos.data ?? []).length === 0 ? (
@@ -225,45 +238,6 @@ export default function WhatsApp() {
                     </div>
                   </article>
                 ))
-              )}
-            </TabsContent>
-
-            <TabsContent value="mensagens" className="mt-4 space-y-3">
-              {conversas.length === 0 ? (
-                <EmptyState icon={MessageCircle} title="Nenhuma mensagem guardada" description="Mensagens aparecem aqui assim que chegam." />
-              ) : (
-                conversas.map((lista) => {
-                  const contato = lista[0].contact;
-                  const cliente = contato?.client_id ? nomeDoCliente.get(contato.client_id) : null;
-                  return (
-                    <section key={contato?.id ?? "sem-contato"} className="rounded-2xl border border-border bg-card p-4">
-                      <p className="text-sm font-semibold">
-                        {cliente ?? contato?.profile_name ?? "Contato"}
-                        <span className="ml-1.5 font-normal text-muted-foreground">
-                          {contato ? formatarTelefone(contato.wa_id) : ""}
-                        </span>
-                      </p>
-                      <ul className="mt-3 space-y-2">
-                        {lista.map((mensagem) => (
-                          <li
-                            key={mensagem.id}
-                            className={`rounded-xl px-3 py-2 text-sm ${mensagem.direction === "enviada" ? "ml-8 bg-brand-soft/40" : "mr-8 bg-muted/40"}`}
-                          >
-                            <p className="whitespace-pre-line">{mensagem.body ?? `[${mensagem.message_type}]`}</p>
-                            <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-                              {mensagem.direction === "enviada" ? "Agência" : "Cliente"} · {quando.format(new Date(mensagem.sent_at))}
-                              {mensagem.fora_do_horario && <StatusBadge variant="warning" size="sm">fora do horário</StatusBadge>}
-                              {mensagem.summary_id && <StatusBadge variant="success" size="sm">resumida</StatusBadge>}
-                              <span className="inline-flex items-center gap-1">
-                                <Clock3 className="h-3 w-3" /> {textoContador(diasParaApagar(mensagem.expires_at))}
-                              </span>
-                            </p>
-                          </li>
-                        ))}
-                      </ul>
-                    </section>
-                  );
-                })
               )}
             </TabsContent>
 
